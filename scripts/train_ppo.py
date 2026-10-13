@@ -54,7 +54,8 @@ def main(cfg: DictConfig):
         default_run_name = (
             f"{cfg.exp_name}-{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}"
         )
-        run_idx = run.name.split("-")[-1]
+        # run_idx = run.name.split("-")[-1]
+        run_idx = (run.name or run.id or "local").split("-")[-1]
         run.name = f"{run_idx}-{default_run_name}"
         setproctitle(run.name)
 
@@ -229,9 +230,14 @@ def main(cfg: DictConfig):
     if aa.is_main_process():
         ckpt_path = save(policy, "checkpoint_final")
         policy_eval = policy.get_rollout_policy("eval")
-        info, trajs, stats = evaluate(
-            env, policy_eval, render=cfg.eval_render, seed=cfg.seed
-        )
+        # info, trajs, stats = evaluate(
+            # env, policy_eval, render=cfg.eval_render, seed=cfg.seed
+        # )
+        with ScopedTimer("rollout"):
+            info, trajs, stats = evaluate(
+                env, policy_eval, render=cfg.eval_render, seed=cfg.seed
+            )
+
         info["env_frames"] = env_frames
         run.log(info)
         wandb.finish()

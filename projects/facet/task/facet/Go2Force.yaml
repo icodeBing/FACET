@@ -19,11 +19,12 @@ sim:
   isaac_physics_dt: 0.005
   mujoco_physics_dt: 0.002
 
-action:
-  _target_: active_adaptation.envs.mdp.action.JointPosition
-  action_scaling: {.*_joint: 0.5}
-  max_delay: 1
-  alpha: [0.5, 1.0]
+input:
+  action:
+    _target_: JointPosition
+    action_scaling: {".*_joint": 0.5}
+    max_delay: 1
+    alpha_range: [0.5, 1.0]
 
 command:
   _target_: ImpedanceCommandManager
@@ -49,19 +50,17 @@ command:
 
 observation:
   policy:
-    command:
-    gravity_multistep:  {steps: 4, noise_std: 0.05}
+    command: {}
+    gravity_multistep: {steps: 4, noise_std: 0.05}
     joint_pos_multistep: {steps: 4, noise_std: 0.05}
     joint_vel_multistep: {steps: 4, noise_std: 0.2}
     prev_actions: {steps: 3}
-  # priv:
-    command_hidden:
-    root_linvel_b:    {yaw_only: true}
-    root_angvel_b:
-    applied_torque:   {}
+  priv:
+    root_linvel_b: {yaw_only: true}
+    root_angvel_b: {}
     contact_indicator: {body_names: [".*_foot"]}
   ext:
-    external_forces:  {body_names: ["base"]}
+    external_forces: {body_names: ["base"]}
     external_torques: {body_names: ["base"]}
 
 reward:
@@ -84,7 +83,7 @@ reward:
     action_rate2_l2:    {weight: 0.005}
     feet_sliding:       {weight: 0.2, body_names: .*_foot}
     feet_air_time:      {weight: 0.2, body_names: .*_foot, thres: 0.3}
-    undesired_contact:  {body_names: [Head.*, .*_calf, .*thigh], weight: 2.0, enabled: true}
+    undesired_contact:  {body_names: [Head.*, .*_calf, .*thigh], weight: 2.0}
   debug:
     _enabled_: false
     feet_sliding:       {weight: 1.0, body_names: .*_foot}
@@ -98,7 +97,7 @@ reward:
 termination:
   crash: {body_names_expr: [Head.*, base, .*_calf], t_thres: 0.1}
   fall_over: {xy_thres: 0.9}
-  soft_contact: {body_names: [Head.*, .*_calf]}
+  undesired_contact: {body_names: [Head.*, .*_calf]}
 
 randomization:
   perturb_body_mass:
@@ -111,7 +110,7 @@ randomization:
     dynamic_friction_range: [0.5, 4.0]
     restitution_range:      [0.0, 0.5]
   motor_params:
-    actuator_name: base_legs
+    # actuator_name: base_legs
     stiffness_range:  
       F[L,R]_hip_joint:   [0.8, 1.2]
       F[L,R]_thigh_joint: [0.8, 1.2]
@@ -126,10 +125,10 @@ randomization:
       R[L,R]_hip_joint:   [0.8, 1.2]
       R[L,R]_thigh_joint: [0.8, 1.2]
       R[L,R]_calf_joint:  [0.8, 1.2]
-    scale_factor_range:
-      .*_hip_joint:   [0.8, 1.2]
-      .*_thigh_joint: [0.8, 1.2]
-      .*_calf_joint:  [0.8, 1.2]
+    #  scale_factor_range:
+    #   .*_hip_joint:   [0.8, 1.2]
+    #   .*_thigh_joint: [0.8, 1.2]
+    #   .*_calf_joint:  [0.8, 1.2]
     armature_range:
       .*: [0.0, 0.02]
   reset_joint_states_scale:

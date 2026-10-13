@@ -275,7 +275,7 @@ class PPOPolicy(PPOBase):
         spec = Unbounded((num_envs, 128), device=self.device)
         return TensorDictPrimer({"adapt_hx": spec}, reset_key="done", expand_specs=False)
 
-    def get_rollout_policy(self, mode: str="train"):
+    def get_rollout_policy(self, mode: str="train", critic: bool = False):
         modules = [self.vecnorm]
         
         if self.cfg.phase == "train":
@@ -290,8 +290,15 @@ class PPOPolicy(PPOBase):
             modules.append(self.adapt_ema)
             modules.append(self.actor_student)
         
+        if critic:
+            modules.append(self.critic)
+
         policy = Seq(*modules)
         return policy
+
+    def compute_value(self, tensordict):
+        self.vecnorm(tensordict)
+        return self.critic(tensordict)
 
     @VecNorm.freeze()
     def train_op(self, tensordict: TensorDict):
@@ -447,7 +454,8 @@ class PPOPolicy(PPOBase):
         failed_keys = super().load_state_dict(state_dict, strict)
         if state_dict.get("last_phase", "train") == "train":
             # only copy to initialize the actor once
-            hard_copy_(self.actor, self.actor_adapt)
+            # hard_copy_(self.actor, self.actor_adapt)
+            hard_copy_(self.actor_teacher, self.actor_student)
         return failed_keys
 
 
