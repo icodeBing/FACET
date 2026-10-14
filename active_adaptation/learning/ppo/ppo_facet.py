@@ -329,7 +329,24 @@ class PPOPolicy(PPOBase):
 
         reward = tensordict[REWARD_KEY].sum(-1)
         tensordict["adv"] = normalize(tensordict["adv"], subtract_mean=True)
-        tensordict = tensordict.select(*self.train_in_keys)
+        train_in_keys = list(self.train_in_keys)
+        if self.cfg.symaug:
+            # The mirrored sample needs its own probability under the rollout
+            # policy. It is generally not equal to the original sample's
+            # probability until the policy has learned exact equivariance.
+            with torch.no_grad():
+                symmetry = tensordict.empty()
+                symmetry["_obs_normed"] = self.obs_transform(tensordict["_obs_normed"])
+                symmetry["_priv_normed"] = self.priv_transform(tensordict["_priv_normed"])
+                symmetry["_ext_normed"] = self.ext_transform(tensordict["_ext_normed"])
+                symmetry[ACTION_KEY] = self.act_transform(tensordict[ACTION_KEY])
+                self.encoder_priv(symmetry)
+                old_symmetry_dist = self.actor_teacher.get_dist(symmetry)
+                tensordict["sym_action_log_prob"] = old_symmetry_dist.log_prob(
+                    symmetry[ACTION_KEY]
+                )
+            train_in_keys.append("sym_action_log_prob")
+        tensordict = tensordict.select(*train_in_keys)
             
         for epoch in range(self.cfg.ppo_epochs):
             batch = make_batch(tensordict, self.cfg.num_minibatches)
@@ -372,40 +389,44 @@ class PPOPolicy(PPOBase):
 
     # @torch.compile
     def _update(self, tensordict: TensorDict):
-        bsize = tensordict.shape[0]
-        symmetry = tensordict.empty()
-        symmetry["_obs_normed"] = self.obs_transform(tensordict["_obs_normed"])
-        symmetry["_priv_normed"] = self.priv_transform(tensordict["_priv_normed"])
-        symmetry["_ext_normed"] = self.ext_transform(tensordict["_ext_normed"])
-        symmetry[ACTION_KEY] = self.act_transform(tensordict[ACTION_KEY])
-        symmetry["action_log_prob"] = tensordict["action_log_prob"]
-        symmetry["is_init"] = tensordict["is_init"]
-        symmetry["step_count"] = tensordict["step_count"]
-        symmetry["ret"] = tensordict["ret"]
-        symmetry["adv"] = tensordict["adv"]
+        original_bsize = tensordict.shape[0]
         if self.cfg.symaug:
-            tensordict = torch.cat([tensordict, symmetry], dim=0)
+            symmetry = tensordict.empty()
+            symmetry["_obs_normed"] = self.obs_transform(tensordict["_obs_normed"])
+            symmetry["_priv_normed"] = self.priv_transform(tensordict["_priv_normed"])
+            symmetry["_ext_normed"] = self.ext_transform(tensordict["_ext_normed"])
+            symmetry[ACTION_KEY] = self.act_transform(tensordict[ACTION_KEY])
+            symmetry["action_log_prob"] = tensordict["sym_action_log_prob"]
+            symmetry["is_init"] = tensordict["is_init"]
+            symmetry["step_count"] = tensordict["step_count"]
+            symmetry["ret"] = tensordict["ret"]
+            symmetry["adv"] = tensordict["adv"]
+            tensordict = torch.cat([
+                tensordict.exclude("sym_action_log_prob"), symmetry
+            ], dim=0)
         
         valid = (tensordict["step_count"] > 1)
         valid_cnt = valid.sum()
 
-        action = tensordict[ACTION_KEY]
+        # Keep the rollout data fixed: actor.forward() writes a new action and
+        # action_log_prob, which must not replace the denominator of PPO's ratio.
+        action = tensordict[ACTION_KEY].detach()
+        old_log_probs = tensordict["action_log_prob"].detach()
         if self.cfg.phase == "train":
             actor = self.actor_teacher
             opt = self.opt_teacher
             self.encoder_priv(tensordict)
-            self.actor_teacher(tensordict)
         elif self.cfg.phase == "finetune":
             actor = self.actor_student
             opt = self.opt_finetune
-            self.actor_student(tensordict)
 
-        dist = IndependentNormal(tensordict["loc"], tensordict["scale"])
+        # Evaluate the collected action without sampling or overwriting it.
+        dist = actor.get_dist(tensordict)
         log_probs = dist.log_prob(action)
         entropy = (dist.entropy().reshape_as(valid) * valid).sum() / valid_cnt
 
         adv = tensordict["adv"]
-        log_ratio = (log_probs - tensordict["action_log_prob"]).unsqueeze(-1)
+        log_ratio = (log_probs - old_log_probs).unsqueeze(-1)
         ratio = torch.exp(log_ratio)
         surr1 = adv * ratio
         surr2 = adv * ratio.clamp(1.-self.clip_param, 1.+self.clip_param)
@@ -428,21 +449,23 @@ class PPOPolicy(PPOBase):
         with torch.no_grad():
             explained_var = 1 - value_loss / b_returns[~tensordict["is_init"]].var()
             clipfrac = ((ratio - 1).abs() > self.clip_param).float().mean()
-            symmetry_loss = F.mse_loss(
-                tensordict["loc"][bsize:], 
-                self.act_transform(tensordict["loc"][:bsize])
-            )
+            approx_kl = ((ratio - 1) - log_ratio).mean()
         info = {
             "actor/policy_loss": policy_loss.detach(),
             "actor/entropy": entropy.detach(),
             "actor/grad_norm": actor_grad_norm,
-            'actor/approx_kl': ((ratio - 1) - log_ratio).mean(),
+            'actor/approx_kl': approx_kl,
             "actor/clamp_ratio": clipfrac.detach(),
-            "actor/symmetry_loss": symmetry_loss.detach(),
-            "critic/value_loss": value_loss,
+            "critic/value_loss": value_loss.detach(),
             "critic/grad_norm": critic_grad_norm,
             "critic/explained_var": explained_var,
         }
+        if self.cfg.symaug:
+            with torch.no_grad():
+                info["actor/symmetry_loss"] = F.mse_loss(
+                    tensordict["loc"][original_bsize:],
+                    self.act_transform(tensordict["loc"][:original_bsize])
+                )
         return info
     
     def state_dict(self):
