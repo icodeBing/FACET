@@ -182,7 +182,14 @@ def main(cfg: DictConfig):
         for i in progress:
             rollout_start = time.perf_counter()
             with ScopedTimer("rollout") as rollout_timer:
-                data, carry = collect(carry, rollout_policy, transitions)
+                try:
+                    data, carry = collect(carry, rollout_policy, transitions)
+                except Exception:
+                    logging.exception(
+                        "Rollout failed at iteration %s, env_frames=%s. Last saved checkpoint: %s",
+                        i, env_frames * aa.get_world_size(), ckpt_path,
+                    )
+                    raise
             rollout_time = rollout_timer.last_time
 
             episode_stats.add(data)
@@ -195,7 +202,14 @@ def main(cfg: DictConfig):
                     info[key] = torch.mean(v.float()).item()
 
             with ScopedTimer("training") as training_timer:
-                info.update(policy.train_op(data))
+                try:
+                    info.update(policy.train_op(data))
+                except Exception:
+                    logging.exception(
+                        "Policy update failed at iteration %s, env_frames=%s. Last saved checkpoint: %s",
+                        i, env_frames * aa.get_world_size(), ckpt_path,
+                    )
+                    raise
             training_time = training_timer.last_time
 
             info.update(env.extra)

@@ -56,11 +56,12 @@ class PPOConfig:
     _target_: str = "active_adaptation.learning.ppo.ppo_facet.PPOPolicy"
     name: str = "ppo_facet"
     train_every: int = 32
-    ppo_epochs: int = 4
+    ppo_epochs: int = 2
     num_minibatches: int = 4
-    lr: float = 5e-4
+    lr: float = 1e-4
     clip_param: float = 0.2
     entropy_coef: float = 0.002
+    target_kl: Union[float, None] = 0.02
 
     compile: bool = False # slightly improve speed on some devices
 
@@ -75,6 +76,57 @@ cs.store("ppo_facet_train", node=PPOConfig(phase="train"), group="algo")
 # so we don't use symmetry augmentation in adapt and finetune phases
 cs.store("ppo_facet_adapt", node=PPOConfig(phase="adapt", symaug=False), group="algo")
 cs.store("ppo_facet_finetune", node=PPOConfig(phase="finetune", symaug=False), group="algo")
+
+
+def require_finite(context, **tensors):
+    """Check on device, synchronizing only once unless an error needs details."""
+    if not tensors:
+        return
+    checks = [torch.isfinite(value).all() for value in tensors.values()]
+    finite = torch.stack([check.to(checks[0].device) for check in checks])
+    if not finite.all().item():
+        bad = [name for name, ok in zip(tensors, finite.tolist()) if not ok]
+        raise FloatingPointError(f"FACET {context}: NaN/Inf in {', '.join(bad)}")
+
+
+def check_tensordict(tensordict, context):
+    require_finite(context, **{
+        str(key): value for key, value in tensordict.items(True, True)
+        if torch.is_tensor(value) and value.is_floating_point()
+    })
+
+
+def checked_tensors(*values, context, names):
+    require_finite(context, **dict(zip(names, values)))
+    return values if len(values) > 1 else values[0]
+
+
+class FiniteCheck(nn.Module):
+    def __init__(self, names, context):
+        super().__init__()
+        self.names = names
+        self.context = context
+
+    def forward(self, *values):
+        return checked_tensors(*values, context=self.context, names=self.names)
+
+
+def checked_step(optimizer, modules, max_grad_norm):
+    """Check and clip every optimized module before changing any parameters."""
+    norms = {}
+    for name, module in modules.items():
+        try:
+            norms[name] = nn.utils.clip_grad_norm_(
+                module.parameters(), max_grad_norm, error_if_nonfinite=True
+            )
+        except RuntimeError as exc:
+            raise FloatingPointError(f"FACET backward: non-finite {name} gradient norm") from exc
+    optimizer.step()
+    require_finite("optimizer step", **{
+        f"{name}/{key}": value
+        for name, module in modules.items() for key, value in module.named_parameters()
+    })
+    return norms
 
 
 class GRU(nn.Module):
@@ -276,7 +328,14 @@ class PPOPolicy(PPOBase):
         return TensorDictPrimer({"adapt_hx": spec}, reset_key="done", expand_specs=False)
 
     def get_rollout_policy(self, mode: str="train", critic: bool = False):
-        modules = [self.vecnorm]
+        observation_keys = [OBS_KEY, OBS_PRIV_KEY, "ext"]
+        modules = []
+        if mode != "deploy":
+            modules.append(Mod(
+                FiniteCheck(observation_keys, "rollout observations"),
+                observation_keys, observation_keys,
+            ))
+        modules.append(self.vecnorm)
         
         if self.cfg.phase == "train":
             modules.append(self.encoder_priv)
@@ -293,6 +352,12 @@ class PPOPolicy(PPOBase):
         if critic:
             modules.append(self.critic)
 
+        # Stop before an invalid action reaches physics, including during play.
+        if mode != "deploy":
+            modules.append(Mod(
+                FiniteCheck([ACTION_KEY], "rollout action"), [ACTION_KEY], [ACTION_KEY]
+            ))
+
         policy = Seq(*modules)
         return policy
 
@@ -305,6 +370,7 @@ class PPOPolicy(PPOBase):
         assert VecNorm.FROZEN, "VecNorm must be frozen before training"
         info = {}
         tensordict = tensordict.exclude(("next", "stats"))
+        check_tensordict(tensordict, "collected transitions")
         
         # apply vecnorm once
         self.vecnorm(tensordict)
@@ -326,6 +392,7 @@ class PPOPolicy(PPOBase):
         infos = []
         
         tensordict = self.compute_advantage(tensordict, self.critic, "adv", "ret")
+        require_finite("GAE", adv=tensordict["adv"], ret=tensordict["ret"])
 
         reward = tensordict[REWARD_KEY].sum(-1)
         tensordict["adv"] = normalize(tensordict["adv"], subtract_mean=True)
@@ -347,17 +414,26 @@ class PPOPolicy(PPOBase):
                 )
             train_in_keys.append("sym_action_log_prob")
         tensordict = tensordict.select(*train_in_keys)
-            
+
+        early_stop = False
         for epoch in range(self.cfg.ppo_epochs):
             batch = make_batch(tensordict, self.cfg.num_minibatches)
             for minibatch in batch:
                 info = self._update(minibatch)
                 infos.append(info)
+                if not info["actor/update_applied"].item():
+                    early_stop = True
+                    break
+            if early_stop:
+                break
 
         infos = pytree.tree_map(lambda *xs: sum(xs).item() / len(xs), *infos)
         infos["critic/value_mean"] = tensordict["ret"].mean().item()
         infos["critic/value_std"] = tensordict["ret"].std().item()
         infos["critic/neg_rew_ratio"] = (reward <= 0.).float().mean().item()
+        infos["actor/early_stop"] = float(early_stop)
+        opt = self.opt_teacher if self.cfg.phase == "train" else self.opt_finetune
+        infos["actor/lr"] = opt.param_groups[0]["lr"]
         return dict(sorted(infos.items()))
     
     @set_recurrent_mode(True)
@@ -374,12 +450,15 @@ class PPOPolicy(PPOBase):
                 priv_loss = (priv_loss * (~minibatch["is_init"])).mean()
                 ext_loss = self.adapt_loss_fn(minibatch["ext_pred"], minibatch["ext_feature"])
                 ext_loss = (ext_loss * (~minibatch["is_init"])).mean()
-                self.opt_adapt.zero_grad()
-                (priv_loss + ext_loss).backward()
-                self.opt_adapt.step()
+                loss = priv_loss + ext_loss
+                require_finite("adapt loss", loss=loss)
+                self.opt_adapt.zero_grad(set_to_none=True)
+                loss.backward()
+                norms = checked_step(self.opt_adapt, {"adapt": self.adapt_module}, self.max_grad_norm)
                 infos.append(TensorDict({
-                    "adapt/priv_loss": priv_loss,
-                    "adapt/ext_loss": ext_loss,
+                    "adapt/priv_loss": priv_loss.detach(),
+                    "adapt/ext_loss": ext_loss.detach(),
+                    "adapt/grad_norm": norms["adapt"],
                 }, []))
         
         soft_copy_(self.adapt_module, self.adapt_ema, 0.04)
@@ -389,6 +468,7 @@ class PPOPolicy(PPOBase):
 
     # @torch.compile
     def _update(self, tensordict: TensorDict):
+        check_tensordict(tensordict, "PPO minibatch")
         original_bsize = tensordict.shape[0]
         if self.cfg.symaug:
             symmetry = tensordict.empty()
@@ -407,6 +487,8 @@ class PPOPolicy(PPOBase):
         
         valid = (tensordict["step_count"] > 1)
         valid_cnt = valid.sum()
+        if valid_cnt.item() == 0:
+            raise FloatingPointError("FACET PPO minibatch: no valid steps (step_count > 1)")
 
         # Keep the rollout data fixed: actor.forward() writes a new action and
         # action_log_prob, which must not replace the denominator of PPO's ratio.
@@ -422,12 +504,14 @@ class PPOPolicy(PPOBase):
 
         # Evaluate the collected action without sampling or overwriting it.
         dist = actor.get_dist(tensordict)
+        require_finite("actor distribution", loc=tensordict["loc"], scale=tensordict["scale"])
         log_probs = dist.log_prob(action)
         entropy = (dist.entropy().reshape_as(valid) * valid).sum() / valid_cnt
 
         adv = tensordict["adv"]
         log_ratio = (log_probs - old_log_probs).unsqueeze(-1)
         ratio = torch.exp(log_ratio)
+        require_finite("PPO ratio", log_ratio=log_ratio, ratio=ratio)
         surr1 = adv * ratio
         surr2 = adv * ratio.clamp(1.-self.clip_param, 1.+self.clip_param)
         policy_loss = - (torch.min(surr1, surr2).reshape_as(valid) * valid).sum() / valid_cnt
@@ -439,33 +523,47 @@ class PPOPolicy(PPOBase):
         value_loss = (value_loss.reshape_as(valid) * valid).sum() / valid_cnt
         
         loss = policy_loss + entropy_loss + value_loss
-        
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        actor_grad_norm = nn.utils.clip_grad_norm_(actor.parameters(), self.max_grad_norm)
-        critic_grad_norm = nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-        opt.step()
-        
+        require_finite("PPO loss", policy_loss=policy_loss, entropy_loss=entropy_loss, value_loss=value_loss, total_loss=loss)
+
         with torch.no_grad():
-            explained_var = 1 - value_loss / b_returns[~tensordict["is_init"]].var()
-            clipfrac = ((ratio - 1).abs() > self.clip_param).float().mean()
-            approx_kl = ((ratio - 1) - log_ratio).mean()
+            # Use the same valid samples as the objective. A large KL ends this
+            # rollout's PPO epochs before applying another oversized update.
+            approx_kl = (((ratio - 1) - log_ratio) * valid).sum() / valid_cnt
+            clipfrac = ((((ratio - 1).abs() > self.clip_param) * valid).sum() / valid_cnt)
+            return_var = b_returns[valid].var(unbiased=False).clamp_min(1e-8)
+            explained_var = 1 - value_loss.detach() / return_var
+        require_finite("PPO diagnostics", approx_kl=approx_kl, explained_var=explained_var)
+        update_applied = self.cfg.target_kl is None or approx_kl.item() <= 1.5 * self.cfg.target_kl
+
+        optimized_modules = {"actor": actor, "critic": self.critic}
+        if self.cfg.phase == "train":
+            optimized_modules["encoder_priv"] = self.encoder_priv
+        norms = {name: loss.new_zeros(()) for name in optimized_modules}
+
+        opt.zero_grad(set_to_none=True)
+        if update_applied:
+            loss.backward()
+            norms = checked_step(opt, optimized_modules, self.max_grad_norm)
         info = {
             "actor/policy_loss": policy_loss.detach(),
             "actor/entropy": entropy.detach(),
-            "actor/grad_norm": actor_grad_norm,
+            "actor/grad_norm": norms["actor"],
+            "actor/update_applied": loss.new_tensor(float(update_applied)),
             'actor/approx_kl': approx_kl,
             "actor/clamp_ratio": clipfrac.detach(),
             "critic/value_loss": value_loss.detach(),
-            "critic/grad_norm": critic_grad_norm,
+            "critic/grad_norm": norms["critic"],
             "critic/explained_var": explained_var,
         }
+        if self.cfg.phase == "train":
+            info["encoder_priv/grad_norm"] = norms["encoder_priv"]
         if self.cfg.symaug:
             with torch.no_grad():
                 info["actor/symmetry_loss"] = F.mse_loss(
                     tensordict["loc"][original_bsize:],
                     self.act_transform(tensordict["loc"][:original_bsize])
                 )
+        require_finite("PPO metrics", **info)
         return info
     
     def state_dict(self):
@@ -474,6 +572,11 @@ class PPOPolicy(PPOBase):
         return state_dict
     
     def load_state_dict(self, state_dict, strict=True):
+        require_finite("checkpoint", **{
+            f"{name}/{key}": value
+            for name, values in state_dict.items() if isinstance(values, dict)
+            for key, value in values.items() if torch.is_tensor(value)
+        })
         failed_keys = super().load_state_dict(state_dict, strict)
         if state_dict.get("last_phase", "train") == "train":
             # only copy to initialize the actor once
