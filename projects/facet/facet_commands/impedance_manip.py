@@ -135,6 +135,8 @@ def sample_command_world(
     root_link_pos_w: wp.array(dtype=wp.vec3),
     root_link_rpy_w: wp.array(dtype=wp.vec3),
     seed: wp.int32,
+    virtual_mass_range: wp.array(dtype=wp.float32),
+    virtual_mass_range_len: wp.int32,
     # output
     setpoint_pos_w: wp.array(dtype=wp.vec3),
     setpoint_rpy_w: wp.array(dtype=wp.vec3),
@@ -153,7 +155,8 @@ def sample_command_world(
     ang_kp = lin_kp
     ang_kd = lin_kd
     
-    virtual_mass = 2.0 ** wp.float32(wp.randi(seed_, 1, 4))
+    virtual_mass_idx = wp.randi(seed_, 0, virtual_mass_range_len)
+    virtual_mass = virtual_mass_range[virtual_mass_idx]
 
     pos_offset_xy = wp.sample_unit_ring(seed_) * wp.randf(seed_, 0.5, 1.5)
     setpoint_pos_w[tid] = root_link_pos_w[tid] + wp.vec3(pos_offset_xy.x, pos_offset_xy.y, 0.0)
@@ -203,6 +206,11 @@ class ImpedanceCommandManager(Command):
         temporal_smoothing: int=32,
     ) -> None:
         super().__init__(env)
+
+        if not virtual_mass_range:
+            raise ValueError("`virtual_mass_range` must contain at least one value")
+        if any(float(mass) <= 0.0 for mass in virtual_mass_range):
+            raise ValueError("`virtual_mass_range` values must be positive")
         
         if eef_body_name is not None:
             assert arm_body_name is not None, "`arm_body_name` is required if `eef_body_name` is provided"
@@ -416,6 +424,8 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.asset.data.root_link_pos_w, dtype=wp.vec3, return_ctype=True),
                 wp.from_torch(self.root_link_rpy_w, dtype=wp.vec3, return_ctype=True),
                 self.seed,
+                wp.from_torch(self.virtual_mass_range, dtype=wp.float32, return_ctype=True),
+                len(self.virtual_mass_range),
             ],
             outputs=[
                 wp.from_torch(self.setpoint_w[:, :3], dtype=wp.vec3, return_ctype=True),
@@ -441,6 +451,8 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(root_link_pos, dtype=wp.vec3, return_ctype=True),
                 wp.from_torch(self.root_link_rpy_w, dtype=wp.vec3, return_ctype=True),
                 self.seed,
+                wp.from_torch(self.virtual_mass_range, dtype=wp.float32, return_ctype=True),
+                len(self.virtual_mass_range),
             ],
             outputs=[
                 wp.from_torch(self.setpoint_w[:, :3], dtype=wp.vec3, return_ctype=True),
