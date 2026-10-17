@@ -61,6 +61,10 @@ observation:
   priv:
     root_linvel_b: {yaw_only: true}
     root_angvel_b: {}
+    root_linacc_substep: {flatten: true}
+    joint_torques:
+      joint_names: "(?!(.*wrist.*)).*"
+      scale: 100.0
     contact_indicator:
       body_names: [".*ankle_roll_link"]
   ext:

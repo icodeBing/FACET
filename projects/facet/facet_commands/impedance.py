@@ -908,12 +908,13 @@ class VelocityImpulse(Twist):
         #     }
         #     # torch.save(data, "trajs_vel1_400.pt")
         #     exit(0)
-        target = self.asset.data.root_pos_w[2].cpu()
-        eye = self.asset.data.root_pos_w[2].cpu() + torch.tensor([2.4, 0.6, 1.0])
-        self.env.sim.set_camera_view(
-            eye=eye,
-            target=target,
-        )
+        
+        # target = self.asset.data.root_pos_w[2].cpu()
+        # eye = self.asset.data.root_pos_w[2].cpu() + torch.tensor([2.4, 0.6, 1.0])
+        # self.env.sim.set_camera_view(
+        #     eye=eye,
+        #     target=target,
+        # )
 
     def debug_draw(self):
         super().debug_draw()

@@ -329,9 +329,13 @@ class single_foot_contact(Reward):
     @override
     def _compute(self) -> torch.Tensor:
         in_contact = self.contact_sensor.data.current_contact_time[:, self.body_ids] > self.margin
-        single_contact = torch.where(torch.sum(in_contact, dim=1) == 1, 0., -1.)
+        # Double support is a normal and useful part of a biped gait.  Penalize
+        # only loss of all support feet; the phase reward below handles which
+        # foot should lead without forcing an unrealistically strict one-foot
+        # contact pattern.
+        support_contact = torch.where(torch.any(in_contact, dim=1), 0., -1.)
         valid = ~self.command_manager.is_standing_env
-        return single_contact.reshape(self.num_envs, 1), valid.reshape(self.num_envs, 1)
+        return support_contact.reshape(self.num_envs, 1), valid.reshape(self.num_envs, 1)
 
 
 class biped_alternating_contact(Reward):
@@ -376,9 +380,12 @@ class biped_alternating_contact(Reward):
             self.contact_sensor.data.current_contact_time[:, self.body_ids] > self.margin
         )
         left_stance = self.phase.sin() >= 0.0
-        desired = torch.stack((left_stance, ~left_stance), dim=-1)
-        mismatch = (contact != desired).float().sum(dim=-1, keepdim=True)
-        reward = -mismatch / 2.0
+        # Require the phase-designated support foot, while treating temporary
+        # double support as neutral.  An unintended swing-foot contact gets a
+        # smaller penalty than losing the designated support foot.
+        support_missing = (~contact.gather(1, left_stance.unsqueeze(1).long())).float()
+        swing_contact = contact.gather(1, (~left_stance).unsqueeze(1).long()).float()
+        reward = 1.0 - support_missing - 0.25 * swing_contact
         active = ~self.command_manager.is_standing_env
         return reward, active
 

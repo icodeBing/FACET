@@ -45,14 +45,30 @@ class root_linacc_substep(Observation):
             steps = self.env.decimation
         shape = (self.num_envs, steps, 3)
         self.lin_acc_substep = torch.zeros(shape, device=self.env.device)
+        self.prev_linvel_b = torch.zeros(self.num_envs, 3, device=self.env.device)
+
+    @override
+    def reset(self, env_ids: torch.Tensor):
+        self.lin_acc_substep[env_ids] = 0.0
+        # The reset callback runs after the scene state has been restored.  Use
+        # that state as the finite-difference anchor so the first substep does
+        # not report an artificial acceleration from zero to the reset velocity.
+        self.prev_linvel_b[env_ids] = quat_rotate_inverse(
+            self.asset.data.root_link_quat_w[env_ids],
+            self.asset.data.body_lin_vel_w[env_ids, 0],
+        )
 
     @override
     def post_step(self, substep):
         root_link_quat_w = self.asset.data.root_link_quat_w
-        self.lin_acc_substep[:, substep] = quat_rotate_inverse(
+        linvel_b = quat_rotate_inverse(
             root_link_quat_w,
             self.asset.data.body_lin_vel_w[:, 0]
         )
+        self.lin_acc_substep[:, substep] = (
+            linvel_b - self.prev_linvel_b
+        ) / self.env.physics_dt
+        self.prev_linvel_b = linvel_b
 
     @override
     def compute(self):

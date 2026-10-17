@@ -347,13 +347,22 @@ class ImpedanceCommandManager(Command):
 
     @property
     def command(self):
-        result = []
-        result.append(self.setpoint_b)
-        result.append(self.setpoint_b[:, 0:3] * self.cmd.kp_base[:, 0:1])
-        result.append(self.setpoint_b[:, 3:6] * self.cmd.kp_base[:, 1:2])
+        # Match the paper interface: (x_des, Kp, Kd, m).  The setpoint is
+        # expressed in the base frame; gains and virtual mass are explicit so
+        # the actor can condition its response instead of inferring them.
+        result = [
+            self.setpoint_b,
+            self.cmd.kp_base,
+            self.cmd.kd_base,
+            self.cmd.virtual_mass_base,
+        ]
         if self.has_eef:
-            result.append(self.setpoint_eef_b)
-            result.append(self.setpoint_eef_b * self.cmd.kp_eef)
+            result.extend([
+                self.setpoint_eef_b,
+                self.cmd.kp_eef,
+                self.cmd.kd_eef,
+                self.cmd.virtual_mass_eef,
+            ])
         result = torch.cat(result, dim=1)
         return result
     
@@ -366,7 +375,13 @@ class ImpedanceCommandManager(Command):
             perm=torch.arange(3),
             signs=torch.tensor([-1., 1., -1.]), # flip roll and yaw
         )
-        return SymmetryTransform.cat([linear, angular]).repeat(2)
+        base_spatial = SymmetryTransform.cat([linear, angular])
+        gain = SymmetryTransform(perm=torch.arange(2), signs=torch.ones(2))
+        mass = SymmetryTransform(perm=torch.arange(1), signs=torch.ones(1))
+        transforms = [base_spatial, gain, gain, mass]
+        if self.has_eef:
+            transforms.extend([linear, gain, gain, mass])
+        return SymmetryTransform.cat(transforms)
 
 
     @property
@@ -402,7 +417,13 @@ class ImpedanceCommandManager(Command):
             raise ValueError(f"Invalid input dimension: {x.ndim}")
         return quat_rotate(quat, x)
 
-    def step(self, substep: int):
+    def pre_step(self, substep: int):
+        """Apply the sampled disturbance during every physics substep.
+
+        The environment dispatches command hooks through ``pre_step``.  Keeping
+        this hook named ``step`` means the reference model sees the disturbance
+        while Isaac never receives it, which breaks the FACET closed loop.
+        """
         # self.asset._external_force_b[:, self.eef_body_id] += quat_rotate_inverse(
         #     self.asset.data.body_quat_w[:, self.eef_body_id],
         #     self.get_eef_force(self.asset.data.body_pos_w[:, self.eef_body_id], self.asset.data.body_lin_vel_w[:, self.eef_body_id])
@@ -598,6 +619,10 @@ class ImpedanceCommandManager(Command):
             self.setpoint_vel_w[env_ids] = 0.0
         self.cmd_linvel_w = yaw_rotate(self.root_link_rpy_w[:, 2], self.cmd_linvel_b)
         self.command_speed = self.cmd_linvel_b[:, :2].norm(dim=-1, keepdim=True)
+        # Rebuild x_des from the current robot state every control step.  This
+        # is the paper's fixed-velocity construction and prevents the reference
+        # model from tracking a stale setpoint after the robot has moved.
+        self._set_velocity_target(torch.arange(self.num_envs, device=self.device))
 
     def debug_draw(self):
         self.env.debug_draw.vector(
