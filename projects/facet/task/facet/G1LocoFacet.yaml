@@ -25,3 +25,26 @@ reward:
     linvel_exp: {weight: 1.5, dim: 2}
     linvel_projection: {weight: 0.5}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
+
+    # G1-specific gait regularization.  These terms constrain the physical
+    # realization of the FACET reference without changing the FACET command,
+    # impedance dynamics, or force-adaptation objective.
+    feet_clearance:
+      weight: 1.0
+      feet_names: ".*_ankle_roll_link"
+    feet_orientation:
+      weight: 0.15
+      feet_names: ".*_ankle_roll_link"
+      body_name: torso_link
+    biped_alternating_contact:
+      weight: 0.35
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      period: 0.8
+      margin: 0.1
+
+    # Keep the arms near the robot's validated nominal posture.  This is a
+    # soft posture prior, not a scripted arm trajectory, so FACET remains free
+    # to yield to external forces.
+    joint_pos_default:
+      weight: 0.03
+      joint_names: [".*shoulder.*", ".*elbow_joint"]
