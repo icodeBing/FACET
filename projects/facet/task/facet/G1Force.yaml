@@ -74,6 +74,18 @@ reward:
     impedance_pos: {weight: 0.75}
     impedance_vel: {weight: 1.5}
     body_upright: {weight: 1.0, body_name: torso_link}
+    # Biped-specific support and posture regularization. These are soft
+    # constraints so the policy can still yield to the impedance reference.
+    single_foot_contact:
+      weight: 0.5
+      body_names: ".*_ankle_roll_link"
+      margin: 0.1
+    base_height_exp:
+      weight: 1.5
+      target_height: 0.74
+    joint_deviation_l2:
+      weight: 0.05
+      joint_names: [".*hip.*", ".*knee.*", ".*ankle.*", "waist.*"]
     linvel_z_l2: {weight: 0.5}
     angvel_xy_l2: {weight: 0.02, body_names: [pelvis, torso_link]}
     energy_l1: {weight: 2.0e-4}

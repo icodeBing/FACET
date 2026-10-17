@@ -204,6 +204,11 @@ class ImpedanceCommandManager(Command):
         arm_body_name: Optional[str]=None,
         ref_steps=[8, 16, 32],
         temporal_smoothing: int=32,
+        fixed_velocity: bool = False,
+        linvel_x_range=(-0.8, 1.4),
+        linvel_y_range=(-0.8, 0.8),
+        yawvel_range=(-2.0, 2.0),
+        stand_prob: float = 0.05,
     ) -> None:
         super().__init__(env)
 
@@ -223,6 +228,11 @@ class ImpedanceCommandManager(Command):
         if max(ref_steps) > temporal_smoothing:
             raise ValueError(f"`ref_steps` must be less than or equal to `temporal_smoothing`")
         self.temporal_smoothing = temporal_smoothing
+        self.fixed_velocity = fixed_velocity
+        self.linvel_x_range = tuple(float(x) for x in linvel_x_range)
+        self.linvel_y_range = tuple(float(x) for x in linvel_y_range)
+        self.yawvel_range = tuple(float(x) for x in yawvel_range)
+        self.stand_prob = float(stand_prob)
         
         # currently hardcoded in the kernels
         # self.base_kp_range = (4., 40.)
@@ -263,6 +273,11 @@ class ImpedanceCommandManager(Command):
 
             # for gait control
             self.is_standing_env = torch.zeros(self.num_envs, 1, dtype=torch.bool)
+            self.command_speed = torch.zeros(self.num_envs, 1)
+            self.cmd_linvel_b = torch.zeros(self.num_envs, 3)
+            self.cmd_linvel_w = torch.zeros(self.num_envs, 3)
+            self.cmd_yawvel_b = torch.zeros(self.num_envs, 1)
+            self.cmd_base_height = torch.full((self.num_envs, 1), 0.74)
         
         self.force_impulse = ImpulseForce.zeros(self.num_envs, device=self.device)
         # self.force_pull = ConstantForce.zeros(self.num_envs, device=self.device)
@@ -436,6 +451,9 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.cmd.virtual_mass_base, dtype=wp.float32, return_ctype=True),
             ],
         )
+        if self.fixed_velocity:
+            self._sample_velocity(env_ids)
+            self._set_velocity_target(env_ids)
     
     def update(self):
         self.seed = wp.rand_init(self.seed)
@@ -463,7 +481,11 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.cmd.virtual_mass_base, dtype=wp.float32, return_ctype=True),
             ],
         )
-        self.setpoint_w[:, :3] += self.setpoint_vel_w * self.env.step_dt
+        if self.fixed_velocity:
+            self._update_velocity_command(mask)
+            self._set_velocity_target(torch.arange(self.num_envs, device=self.device))
+        else:
+            self.setpoint_w[:, :3] += self.setpoint_vel_w * self.env.step_dt
         
         if self.has_eef:
             self.eef_pos_w = self.asset.data.body_pos_w[:, self.eef_body_id]
@@ -527,6 +549,55 @@ class ImpedanceCommandManager(Command):
             self.setpoint_w[:, :3] - self.asset.data.root_link_pos_w
         )
         self.setpoint_b[:, 3:] = wrap_to_pi(self.setpoint_w[:, 3:] - self.root_link_rpy_w)
+
+    def _sample_velocity(self, env_ids: torch.Tensor):
+        """Sample body-frame locomotion targets for the fixed-velocity mode."""
+        if env_ids.numel() == 0:
+            return
+        n = env_ids.numel()
+        linvel_b = torch.zeros(n, 3, device=self.device)
+        linvel_b[:, 0].uniform_(*self.linvel_x_range)
+        linvel_b[:, 1].uniform_(*self.linvel_y_range)
+        speed = linvel_b[:, :2].norm(dim=-1, keepdim=True)
+        standing = (speed < 0.1) | (torch.rand(n, 1, device=self.device) < self.stand_prob)
+        linvel_b *= (~standing)
+        self.cmd_linvel_b[env_ids] = linvel_b
+        self.cmd_yawvel_b[env_ids, 0].uniform_(*self.yawvel_range)
+        # Keep the [N, 1] shape; squeezing here broadcasts [N, 1] * [N]
+        # into an unintended [N, N] tensor.
+        self.cmd_yawvel_b[env_ids] *= ~standing
+        self.is_standing_env[env_ids] = standing
+        self.command_speed[env_ids] = linvel_b[:, :2].norm(dim=-1, keepdim=True)
+        self.cmd_base_height[env_ids] = 0.74
+
+    def _set_velocity_target(self, env_ids: torch.Tensor):
+        """Convert target velocities to impedance setpoints (paper Eq. 2 setup)."""
+        if env_ids.numel() == 0:
+            return
+        yaw = self.root_link_rpy_w[env_ids, 2]
+        self.cmd_linvel_w[env_ids] = yaw_rotate(yaw, self.cmd_linvel_b[env_ids])
+        lin_kp = self.cmd.kp_base[env_ids, 0:1]
+        lin_kd = self.cmd.kd_base[env_ids, 0:1]
+        ang_kp = self.cmd.kp_base[env_ids, 1:2]
+        ang_kd = self.cmd.kd_base[env_ids, 1:2]
+        self.setpoint_w[env_ids, :3] = (
+            self.asset.data.root_link_pos_w[env_ids]
+            + self.cmd_linvel_w[env_ids] * (lin_kd / lin_kp.clamp_min(1e-6))
+        )
+        self.setpoint_w[env_ids, 3:6] = self.root_link_rpy_w[env_ids]
+        self.setpoint_w[env_ids, 2] = self.asset.data.root_link_pos_w[env_ids, 2]
+        self.setpoint_w[env_ids, 5] += self.cmd_yawvel_b[env_ids, 0] * (
+            ang_kd[:, 0] / ang_kp[:, 0].clamp_min(1e-6)
+        )
+
+    def _update_velocity_command(self, resample_mask: torch.Tensor):
+        env_ids = resample_mask.nonzero().squeeze(-1)
+        if env_ids.numel() > 0:
+            self._sample_velocity(env_ids)
+            # The target is refreshed from the current robot state at each sample.
+            self.setpoint_vel_w[env_ids] = 0.0
+        self.cmd_linvel_w = yaw_rotate(self.root_link_rpy_w[:, 2], self.cmd_linvel_b)
+        self.command_speed = self.cmd_linvel_b[:, :2].norm(dim=-1, keepdim=True)
 
     def debug_draw(self):
         self.env.debug_draw.vector(
