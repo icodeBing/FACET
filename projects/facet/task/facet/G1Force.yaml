@@ -77,25 +77,37 @@ reward:
     # Biped-specific support and posture regularization. These are soft
     # constraints so the policy can still yield to the impedance reference.
     single_foot_contact:
-      weight: 0.5
+      weight: 0.75
       body_names: ".*_ankle_roll_link"
+      margin: 0.1
+    biped_alternating_contact:
+      weight: 0.2
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      period: 0.8
       margin: 0.1
     base_height_exp:
       weight: 1.5
       target_height: 0.74
     joint_deviation_l2:
       weight: 0.05
-      joint_names: [".*hip.*", ".*knee.*", ".*ankle.*", "waist.*"]
+      joint_names:
+        - ".*hip.*"
+        - ".*knee.*"
+        - ".*ankle.*"
+        - "waist.*"
+        - ".*shoulder.*"
+        - ".*elbow_joint"
     linvel_z_l2: {weight: 0.5}
     angvel_xy_l2: {weight: 0.02, body_names: [pelvis, torso_link]}
     energy_l1: {weight: 2.0e-4}
     joint_acc_l2: {weight: 1.0e-7}
     joint_torques_l2: {weight: 5.0e-6}
+    joint_vel_l2: {weight: 1.0e-3, joint_names: [".*shoulder.*"]}
     action_rate_l2: {weight: 0.005}
     action_rate2_l2: {weight: 0.005}
     survival: {weight: 1.0}
     feet_sliding: {weight: 0.2, body_names: ".*_ankle_roll_link"}
-    feet_air_time: {weight: 1.0, body_names: ".*ankle_roll_link", thres: 0.5}
+    feet_air_time: {weight: 2.0, body_names: ".*ankle_roll_link", thres: 0.5}
     undesired_contact:
       weight: 2.0
       body_names:

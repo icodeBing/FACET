@@ -334,6 +334,55 @@ class single_foot_contact(Reward):
         return single_contact.reshape(self.num_envs, 1), valid.reshape(self.num_envs, 1)
 
 
+class biped_alternating_contact(Reward):
+    """Soft phase-based left/right support reward for a two-foot gait."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        period: float = 0.8,
+        margin: float = 0.1,
+    ):
+        super().__init__(env, weight)
+        self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
+        self.body_ids, self.body_names = self.contact_sensor.find_bodies(
+            body_names, preserve_order=True
+        )
+        if len(self.body_ids) != 2:
+            raise ValueError(
+                "biped_alternating_contact requires exactly two ordered foot bodies"
+            )
+        self.body_ids = torch.tensor(self.body_ids, device=self.device)
+        self.period = float(period)
+        if self.period <= 0.0:
+            raise ValueError("period must be positive")
+        self.margin = float(margin)
+        self.phase = torch.zeros(self.num_envs, device=self.device)
+
+    def reset(self, env_ids: torch.Tensor):
+        self.phase[env_ids] = torch.rand(
+            env_ids.numel(), device=self.device
+        ) * (2.0 * torch.pi)
+
+    def update(self):
+        active = ~self.command_manager.is_standing_env.squeeze(-1)
+        self.phase.add_(active * (2.0 * torch.pi * self.env.step_dt / self.period))
+        self.phase.remainder_(2.0 * torch.pi)
+
+    def _compute(self) -> torch.Tensor:
+        contact = (
+            self.contact_sensor.data.current_contact_time[:, self.body_ids] > self.margin
+        )
+        left_stance = self.phase.sin() >= 0.0
+        desired = torch.stack((left_stance, ~left_stance), dim=-1)
+        mismatch = (contact != desired).float().sum(dim=-1, keepdim=True)
+        reward = -mismatch / 2.0
+        active = ~self.command_manager.is_standing_env
+        return reward, active
+
+
 class is_standing_env(Reward):
     def __init__(self, env, weight: float):
         super().__init__(env, weight)

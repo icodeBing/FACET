@@ -25,12 +25,3 @@ reward:
     linvel_exp: {weight: 1.5, dim: 2}
     linvel_projection: {weight: 0.5}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
-    single_foot_contact:
-      weight: 0.75
-      body_names: ".*_ankle_roll_link"
-      margin: 0.1
-    feet_air_time: {weight: 2.0, body_names: ".*_ankle_roll_link", thres: 0.5}
-    joint_vel_l2: {weight: 1.0e-3, joint_names: [".*shoulder.*"]}
-    joint_deviation_l2:
-      weight: 0.1
-      joint_names: [".*shoulder.*", ".*hip.*", ".*elbow_joint"]
