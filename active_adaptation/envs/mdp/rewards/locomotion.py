@@ -341,9 +341,9 @@ class single_foot_contact(Reward):
 class biped_alternating_contact(Reward):
     """Episode-time gait phase reward matching unitree_rl_lab feet_gait.
 
-    The phase must be deterministic and inferable from observation history.
-    A random per-environment phase is not observable by the policy and turns
-    this reward into noise.
+    The phase is deterministic and is exposed to the policy as a sin/cos
+    observation. A hidden phase would make the contact target partially
+    unobservable.
     """
 
     def __init__(
@@ -374,10 +374,8 @@ class biped_alternating_contact(Reward):
         phase = (self.env.episode_length_buf.float() * self.env.step_dt / self.period) % 1.0
         phases = torch.stack((phase, (phase + 0.5) % 1.0), dim=1)
         is_stance = phases < self.threshold
-        matches = (is_stance == contact).float().sum(dim=1, keepdim=True)
-        # Unitree's feet_gait returns one point per foot. Normalize to [0, 1]
-        # while preserving its 0.8 s period and half-period foot offset.
-        reward = matches * 0.5
+        # Preserve unitree_rl_lab's per-foot score in [0, 2].
+        reward = (is_stance == contact).float().sum(dim=1, keepdim=True)
         active = ~self.command_manager.is_standing_env
         return reward, active.reshape(self.num_envs, 1)
 

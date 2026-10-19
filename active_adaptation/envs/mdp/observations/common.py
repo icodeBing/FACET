@@ -103,6 +103,32 @@ class command(Observation):
         return self.command_manager.symmetry_transform()
 
 
+class gait_phase(Observation):
+    """Expose the deterministic biped gait clock to the policy."""
+
+    def __init__(self, env, period: float = 0.8):
+        super().__init__(env)
+        if period <= 0.0:
+            raise ValueError("gait phase period must be positive")
+        self.period = float(period)
+
+    @override
+    def compute(self):
+        phase = (
+            self.env.episode_length_buf.float()
+            * self.env.step_dt
+            * (2.0 * torch.pi / self.period)
+        )
+        return torch.stack((phase.sin(), phase.cos()), dim=-1)
+
+    @override
+    def symmetry_transform(self):
+        # Mirroring swaps left and right, equivalent to shifting gait phase by pi.
+        return sym_utils.SymmetryTransform(
+            perm=torch.arange(2), signs=[-1.0, -1.0]
+        )
+
+
 # class command_hidden(Observation):
 #     def __init__(self, env):
 #         super().__init__(env)

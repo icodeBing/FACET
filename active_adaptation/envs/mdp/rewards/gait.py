@@ -13,33 +13,61 @@ class max_feet_height(Reward):
     def __init__(self, env, weight: float, body_names: str, target_height: float):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
-        self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
         self.body_ids = self.asset.find_bodies(body_names)[0]
-        self.body_contact_ids = self.contact_sensor.find_bodies(body_names)[0]
         self.target_height = target_height
 
-        self.max_height = torch.zeros(self.num_envs, len(self.body_ids), device=self.device)
-        self.rew = torch.zeros(self.num_envs, len(self.body_ids), device=self.device)
-
-    def reset(self, env_ids):
-        self.max_height[env_ids] = 0.
-    
-    def update(self):
-        feet_height = self.asset.data.body_link_pos_w[:, self.body_ids, 2]
-        in_contact = self.contact_sensor.data.current_contact_time[:, self.body_contact_ids] > 0.0
-        self.max_height = torch.maximum(self.max_height, feet_height)
-        # Match unitree_rl_lab's clearance target with a smooth, bounded
-        # touchdown reward.  Rewarding raw height only gives an almost-zero
-        # signal for G1 feet whose world z is below 0.1 m.
-        self.rew = torch.exp(
-            -((self.max_height - self.target_height) / 0.05).square()
-        )
-        self.max_height = torch.where(in_contact, 0., self.max_height)
+        self.command_manager = self.env.command_manager
 
     def _compute(self) -> torch.Tensor:
-        first_contact = self.contact_sensor.compute_first_contact(self.env.step_dt)[:, self.body_contact_ids]
-        rew = self.rew * first_contact
-        return rew.mean(1, keepdim=True)
+        feet_height = self.asset.data.body_link_pos_w[:, self.body_ids, 2]
+        feet_velocity_xy = self.asset.data.body_lin_vel_w[:, self.body_ids, :2]
+        speed_gate = torch.tanh(2.0 * feet_velocity_xy.norm(dim=-1))
+        height_error = (feet_height - self.target_height).square()
+        gravity_gate = (
+            (-self.asset.data.projected_gravity_b[:, 2]).clamp(0.0, 0.7) / 0.7
+        )
+        moving = self.command_manager.command_speed.squeeze(-1) > 0.1
+        cost = (height_error * speed_gate).sum(dim=1, keepdim=True) / 0.05
+        reward = torch.exp(-cost) * gravity_gate.unsqueeze(1)
+        return reward, moving.unsqueeze(1)
+
+
+class feet_lateral_separation(Reward):
+    """Penalize excessively wide lateral stance without forcing feet together."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: list[str],
+        max_separation: float = 0.28,
+        scale: float = 0.08,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.body_ids, self.body_names = self.asset.find_bodies(
+            body_names, preserve_order=True
+        )
+        if len(self.body_ids) != 2:
+            raise ValueError("feet_lateral_separation requires two ordered foot bodies")
+        self.body_ids = torch.tensor(self.body_ids, device=self.device)
+        self.max_separation = float(max_separation)
+        self.scale = float(scale)
+        if self.max_separation <= 0.0 or self.scale <= 0.0:
+            raise ValueError("max_separation and scale must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        root_pos = self.asset.data.root_link_pos_w
+        root_quat = self.asset.data.root_link_quat_w
+        feet_pos_b = quat_rotate_inverse(
+            root_quat.unsqueeze(1),
+            self.asset.data.body_link_pos_w[:, self.body_ids] - root_pos.unsqueeze(1),
+        )
+        separation = (feet_pos_b[:, 0, 1] - feet_pos_b[:, 1, 1]).abs()
+        excess = (separation - self.max_separation).clamp_min(0.0) / self.scale
+        penalty = -excess.square().unsqueeze(1)
+        active = ~self.command_manager.is_standing_env
+        return penalty, active.reshape(self.num_envs, 1)
 
 
 class feet_sliding(Reward):

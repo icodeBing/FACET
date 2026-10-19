@@ -53,6 +53,7 @@ observation:
   # command:
   policy:
     command: {}
+    gait_phase: {period: 0.8}
     gravity_multistep: {steps: 4, noise_std: 0.05}
     joint_pos_multistep: {joint_names: "(?!(.*wrist.*)).*", steps: 4, noise_std: 0.05}
     joint_vel_multistep: {joint_names: "(?!(.*wrist.*)).*", steps: 4, noise_std: 0.2}
@@ -80,12 +81,17 @@ reward:
       body_names: [left_ankle_roll_link, right_ankle_roll_link]
       period: 0.8
       threshold: 0.55
-    # Semantic port of unitree_rl_lab's `foot_clearance_reward`: encourage
-    # the swing foot to reach ~10cm before touchdown, gated on first contact.
+    # Semantic port of unitree_rl_lab's `foot_clearance_reward`: track 10 cm
+    # swing clearance with foot-speed and uprightness gates.
     max_feet_height: {weight: 1.0, body_names: .*ankle_roll_link, target_height: 0.1}
     # Semantic port of unitree_rl_lab's `feet_slide`: penalize foot velocity
     # while in contact (slippage / shuffling without real steps).
     feet_sliding: {weight: 0.2, body_names: .*ankle_roll_link}
+    feet_lateral_separation:
+      weight: 1.0
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      max_separation: 0.28
+      scale: 0.08
     # Semantic port of unitree_rl_lab's `base_height` penalty (target 0.78
     # for the full G1; 0.74 matches this waist-unlocked variant's nominal
     # stance, same target used in G1Force).
@@ -98,13 +104,19 @@ reward:
     survival:           {weight: 1.0}
     action_rate_l2:     {weight: 0.005}
     action_rate2_l2:    {weight: 0.005}
-    # Upper-body stability, matching G1Force's split between arms (soft
-    # posture prior via L2 deviation + swing-speed penalty) and torso
-    # (body_upright + angvel_xy_l2 above).  Weight raised from 0.1 so the
-    # posture prior actually counteracts arm flailing during gait formation.
-    joint_vel_l2:       {weight: 1.0e-3, joint_names: [.*shoulder.*]}
-    joint_deviation_l2: {weight: 0.5, joint_names: [.*shoulder.*, .*elbow_joint]}
+    # Keep arms near the relaxed nominal pose while damping both shoulder
+    # and elbow motion. The previous 0.1 pose weight allowed large abduction
+    # during balance recovery (confirmed by the arm-deviation training stats).
+    joint_vel_l2:       {weight: 3.0e-3, joint_names: [.*shoulder.*, .*elbow_joint]}
+    joint_deviation_l1_arms:
+      _target_: joint_deviation_l1
+      weight: 0.5
+      joint_names: [.*shoulder.*, .*elbow_joint]
     joint_deviation_l2_waist: {weight: 1.0, joint_names: [waist.*]}
+    joint_deviation_l1_legs:
+      _target_: joint_deviation_l1
+      weight: 1.0
+      joint_names: [.*hip_roll_joint, .*hip_yaw_joint]
   debug:
     _enabled_: false
     feet_contact_count: {weight: 1.0, body_names: .*ankle_roll_link}

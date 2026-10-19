@@ -48,6 +48,7 @@ command:
 observation:
   policy:
     command: {}
+    gait_phase: {period: 0.8}
     gravity_multistep: {steps: 6, noise_std: 0.05}
     joint_pos_multistep:
       joint_names: "(?!(.*wrist.*)).*"
