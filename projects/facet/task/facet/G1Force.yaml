@@ -88,7 +88,7 @@ reward:
       weight: 0.2
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
-      margin: 0.1
+      threshold: 0.55
     base_height_exp:
       weight: 1.5
       target_height: 0.74

@@ -71,6 +71,25 @@ reward:
     linvel_z_l2:        {weight: 0.5}
     # tracking_base_height: {weight: 2.0, target_height: 0.74}
     single_foot_contact: {weight: 0.75, body_names: .*ankle_roll_link, margin: 0.1}
+    # Phase-based left/right alternation, semantically ported from
+    # unitree_rl_lab's `feet_gait` (period 0.8, offsets [0.0, 0.5]).
+    # Stronger than the 0.2 used in G1Force because here gait formation is
+    # the primary objective, not a regularizer on top of impedance tracking.
+    biped_alternating_contact:
+      weight: 0.5
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      period: 0.8
+      threshold: 0.55
+    # Semantic port of unitree_rl_lab's `foot_clearance_reward`: encourage
+    # the swing foot to reach ~10cm before touchdown, gated on first contact.
+    max_feet_height: {weight: 1.0, body_names: .*ankle_roll_link, target_height: 0.1}
+    # Semantic port of unitree_rl_lab's `feet_slide`: penalize foot velocity
+    # while in contact (slippage / shuffling without real steps).
+    feet_sliding: {weight: 0.2, body_names: .*ankle_roll_link}
+    # Semantic port of unitree_rl_lab's `base_height` penalty (target 0.78
+    # for the full G1; 0.74 matches this waist-unlocked variant's nominal
+    # stance, same target used in G1Force).
+    base_height_exp: {weight: 1.0, target_height: 0.74}
 
     energy_l1:          {weight: 2.0e-4}
     joint_acc_l2:       {weight: 1.0e-7}
@@ -79,9 +98,13 @@ reward:
     survival:           {weight: 1.0}
     action_rate_l2:     {weight: 0.005}
     action_rate2_l2:    {weight: 0.005}
-    feet_air_time:      {weight: 2.0, body_names: .*ankle_roll_link, thres: 0.5}
+    # Upper-body stability, matching G1Force's split between arms (soft
+    # posture prior via L2 deviation + swing-speed penalty) and torso
+    # (body_upright + angvel_xy_l2 above).  Weight raised from 0.1 so the
+    # posture prior actually counteracts arm flailing during gait formation.
     joint_vel_l2:       {weight: 1.0e-3, joint_names: [.*shoulder.*]}
-    joint_deviation_l2: {weight: 0.1, joint_names: [.*shoulder.*, .*hip.*, .*elbow_joint]}
+    joint_deviation_l2: {weight: 0.5, joint_names: [.*shoulder.*, .*elbow_joint]}
+    joint_deviation_l2_waist: {weight: 1.0, joint_names: [waist.*]}
   debug:
     _enabled_: false
     feet_contact_count: {weight: 1.0, body_names: .*ankle_roll_link}

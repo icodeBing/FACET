@@ -19,7 +19,7 @@ class max_feet_height(Reward):
         self.target_height = target_height
 
         self.max_height = torch.zeros(self.num_envs, len(self.body_ids), device=self.device)
-        self.rew = torch.zeros(self.num_envs, 1, device=self.device)
+        self.rew = torch.zeros(self.num_envs, len(self.body_ids), device=self.device)
 
     def reset(self, env_ids):
         self.max_height[env_ids] = 0.
@@ -28,13 +28,18 @@ class max_feet_height(Reward):
         feet_height = self.asset.data.body_link_pos_w[:, self.body_ids, 2]
         in_contact = self.contact_sensor.data.current_contact_time[:, self.body_contact_ids] > 0.0
         self.max_height = torch.maximum(self.max_height, feet_height)
-        self.rew = self.max_height.clamp_max(self.target_height)
+        # Match unitree_rl_lab's clearance target with a smooth, bounded
+        # touchdown reward.  Rewarding raw height only gives an almost-zero
+        # signal for G1 feet whose world z is below 0.1 m.
+        self.rew = torch.exp(
+            -((self.max_height - self.target_height) / 0.05).square()
+        )
         self.max_height = torch.where(in_contact, 0., self.max_height)
 
     def _compute(self) -> torch.Tensor:
         first_contact = self.contact_sensor.compute_first_contact(self.env.step_dt)[:, self.body_contact_ids]
         rew = self.rew * first_contact
-        return rew.sum(1, keepdim=True)
+        return rew.mean(1, keepdim=True)
 
 
 class feet_sliding(Reward):

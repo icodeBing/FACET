@@ -339,7 +339,12 @@ class single_foot_contact(Reward):
 
 
 class biped_alternating_contact(Reward):
-    """Soft phase-based left/right support reward for a two-foot gait."""
+    """Episode-time gait phase reward matching unitree_rl_lab feet_gait.
+
+    The phase must be deterministic and inferable from observation history.
+    A random per-environment phase is not observable by the policy and turns
+    this reward into noise.
+    """
 
     def __init__(
         self,
@@ -347,7 +352,7 @@ class biped_alternating_contact(Reward):
         weight: float,
         body_names: Names,
         period: float = 0.8,
-        margin: float = 0.1,
+        threshold: float = 0.55,
     ):
         super().__init__(env, weight)
         self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
@@ -362,32 +367,19 @@ class biped_alternating_contact(Reward):
         self.period = float(period)
         if self.period <= 0.0:
             raise ValueError("period must be positive")
-        self.margin = float(margin)
-        self.phase = torch.zeros(self.num_envs, device=self.device)
-
-    def reset(self, env_ids: torch.Tensor):
-        self.phase[env_ids] = torch.rand(
-            env_ids.numel(), device=self.device
-        ) * (2.0 * torch.pi)
-
-    def update(self):
-        active = ~self.command_manager.is_standing_env.squeeze(-1)
-        self.phase.add_(active * (2.0 * torch.pi * self.env.step_dt / self.period))
-        self.phase.remainder_(2.0 * torch.pi)
+        self.threshold = float(threshold)
 
     def _compute(self) -> torch.Tensor:
-        contact = (
-            self.contact_sensor.data.current_contact_time[:, self.body_ids] > self.margin
-        )
-        left_stance = self.phase.sin() >= 0.0
-        # Require the phase-designated support foot, while treating temporary
-        # double support as neutral.  An unintended swing-foot contact gets a
-        # smaller penalty than losing the designated support foot.
-        support_missing = (~contact.gather(1, left_stance.unsqueeze(1).long())).float()
-        swing_contact = contact.gather(1, (~left_stance).unsqueeze(1).long()).float()
-        reward = 1.0 - support_missing - 0.25 * swing_contact
+        contact = self.contact_sensor.data.current_contact_time[:, self.body_ids] > 0.0
+        phase = (self.env.episode_length_buf.float() * self.env.step_dt / self.period) % 1.0
+        phases = torch.stack((phase, (phase + 0.5) % 1.0), dim=1)
+        is_stance = phases < self.threshold
+        matches = (is_stance == contact).float().sum(dim=1, keepdim=True)
+        # Unitree's feet_gait returns one point per foot. Normalize to [0, 1]
+        # while preserving its 0.8 s period and half-period foot offset.
+        reward = matches * 0.5
         active = ~self.command_manager.is_standing_env
-        return reward, active
+        return reward, active.reshape(self.num_envs, 1)
 
 
 class is_standing_env(Reward):

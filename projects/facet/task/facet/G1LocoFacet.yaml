@@ -40,7 +40,7 @@ reward:
       weight: 0.35
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
-      margin: 0.1
+      threshold: 0.55
 
     # Keep the arms near the robot's validated nominal posture.  This is a
     # soft posture prior, not a scripted arm trajectory, so FACET remains free

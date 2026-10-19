@@ -77,6 +77,17 @@ class root_linacc_substep(Observation):
         else:
             return self.lin_acc_substep
 
+    @override
+    def symmetry_transform(self):
+        # Sagittal reflection flips the lateral component of body-frame
+        # acceleration; preserve the temporal layout when the samples flatten.
+        transform = sym_utils.SymmetryTransform(
+            perm=torch.arange(3), signs=[1.0, -1.0, 1.0]
+        )
+        if self.flatten:
+            return transform.repeat(self.lin_acc_substep.shape[1])
+        return transform
+
 
 class command(Observation):
     def __init__(self, env):

@@ -193,6 +193,22 @@ class joint_deviation_l2(Reward):
         return - deviation.square().sum(1, True)
 
 
+class joint_deviation_l2_waist(Reward):
+    def __init__(self, env, weight: float, joint_names: str=".*"):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.joint_ids, self.joint_names = self.asset.find_joints(joint_names)
+        self.joint_ids = torch.tensor(self.joint_ids, device=self.device)
+        self.default_joint_pos = self.asset.data.default_joint_pos[:, self.joint_ids].clone()
+
+    def update(self):
+        self.joint_pos = self.asset.data.joint_pos
+
+    def _compute(self) -> torch.Tensor:
+        deviation = self.joint_pos[:, self.joint_ids] - self.default_joint_pos
+        return - deviation.square().sum(1, True)
+
+
 class joint_deviation_cum(Reward):
     """
     Penalize the cumulative deviation of the joints.
