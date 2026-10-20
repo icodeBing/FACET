@@ -25,8 +25,8 @@ reward:
     # Keep yaw command tracking and biped-specific gait/posture regularizers.
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
 
-    # G1-specific gait priors. These leave the FACET reference dynamics intact
-    # but add constraints to the policy's physical realization of that target.
+    # Phase-aware G1 gait shaping supplements, but does not replace, FACET
+    # reference tracking. All phase terms share the policy's 0.8 s gait clock.
     feet_clearance:
       weight: 1.0
       feet_names: ".*_ankle_roll_link"
@@ -34,10 +34,34 @@ reward:
       weight: 0.15
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
-    max_feet_height:
+    biped_swing_height:
       weight: 1.0
       body_names: ".*_ankle_roll_link"
-      target_height: 0.1
+      period: 0.8
+      stance_ratio: 0.55
+      nominal_height: 0.035
+      clearance: 0.045
+      height_sigma: 0.05
+    biped_swing_forward:
+      weight: 0.2
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      period: 0.8
+      stance_ratio: 0.55
+      speed_scale: 0.5
+    biped_swing_foot_placement:
+      weight: 0.25
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      period: 0.8
+      stance_ratio: 0.55
+      landing_phase: 0.8
+      step_length_scale: 0.35
+      position_sigma: 0.1
+    biped_stance_foot_velocity:
+      weight: 0.05
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      period: 0.8
+      stance_ratio: 0.55
+      speed_scale: 0.5
     feet_lateral_separation:
       weight: 1.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -58,3 +82,9 @@ reward:
     joint_vel_l2:
       weight: 0.003
       joint_names: [".*shoulder.*", ".*elbow_joint"]
+    # A 0.8 s cycle with 55% stance leaves about 0.36 s for swing. The
+    # inherited 0.5 s minimum-air-time penalty contradicted that phase target.
+    feet_air_time:
+      weight: 0.5
+      body_names: ".*ankle_roll_link"
+      thres: 0.3

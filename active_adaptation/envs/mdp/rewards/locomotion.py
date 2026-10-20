@@ -368,16 +368,263 @@ class biped_alternating_contact(Reward):
         if self.period <= 0.0:
             raise ValueError("period must be positive")
         self.threshold = float(threshold)
+        if not 0.0 < self.threshold < 1.0:
+            raise ValueError("threshold must be in (0, 1)")
 
     def _compute(self) -> torch.Tensor:
         contact = self.contact_sensor.data.current_contact_time[:, self.body_ids] > 0.0
-        phase = (self.env.episode_length_buf.float() * self.env.step_dt / self.period) % 1.0
-        phases = torch.stack((phase, (phase + 0.5) % 1.0), dim=1)
-        is_stance = phases < self.threshold
+        _, is_stance, _ = _biped_gait_phase(
+            self.env, self.period, self.threshold
+        )
         # Preserve unitree_rl_lab's per-foot score in [0, 2].
         reward = (is_stance == contact).float().sum(dim=1, keepdim=True)
         active = ~self.command_manager.is_standing_env
         return reward, active.reshape(self.num_envs, 1)
+
+
+def _biped_gait_phase(env, period: float, stance_ratio: float):
+    phase = (
+        env.episode_length_buf.float() * env.step_dt / period
+    ).remainder(1.0)
+    foot_phase = torch.stack((phase, (phase + 0.5).remainder(1.0)), dim=1)
+    is_stance = foot_phase < stance_ratio
+    swing_phase = (
+        (foot_phase - stance_ratio) / (1.0 - stance_ratio)
+    ).clamp(0.0, 1.0)
+    return foot_phase, is_stance, swing_phase
+
+
+class biped_swing_height(Reward):
+    """Track a smooth clearance profile only during each foot's swing phase."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        nominal_height: float = 0.035,
+        clearance: float = 0.045,
+        height_sigma: float = 0.05,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.body_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(self.body_ids) != 2:
+            raise ValueError("biped_swing_height requires exactly two ordered feet")
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.nominal_height = float(nominal_height)
+        self.clearance = float(clearance)
+        self.height_sigma = float(height_sigma)
+        if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
+            raise ValueError("period must be positive and stance_ratio in (0, 1)")
+        if (
+            self.nominal_height < 0.0
+            or self.clearance <= 0.0
+            or self.height_sigma <= 0.0
+        ):
+            raise ValueError(
+                "nominal_height must be nonnegative; clearance and height_sigma positive"
+            )
+
+    def _compute(self) -> torch.Tensor:
+        _, _, swing_phase = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        in_swing = swing_phase > 0.0
+        feet_pos_w = self.asset.data.body_link_pos_w[:, self.body_ids]
+        feet_height = feet_pos_w[:, :, 2] - self.env.get_ground_height_at(
+            feet_pos_w
+        )
+        target = self.nominal_height + self.clearance * torch.sin(
+            torch.pi * swing_phase
+        )
+        reward = torch.exp(-((feet_height - target) / self.height_sigma).square())
+        reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1)
+        upright = (-self.asset.data.projected_gravity_b[:, 2]).clamp(0.0, 0.7) / 0.7
+        active = (~self.command_manager.is_standing_env) & in_swing.any(
+            dim=1, keepdim=True
+        )
+        return reward * upright.unsqueeze(1), active
+
+
+class biped_swing_forward(Reward):
+    """Reward command-aligned foot motion relative to the pelvis during swing."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        speed_scale: float = 0.5,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.body_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(self.body_ids) != 2:
+            raise ValueError("biped_swing_forward requires exactly two ordered feet")
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.speed_scale = float(speed_scale)
+        if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
+            raise ValueError("period must be positive and stance_ratio in (0, 1)")
+        if self.speed_scale <= 0.0:
+            raise ValueError("speed_scale must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        _, _, swing_phase = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        in_swing = swing_phase > 0.0
+        root_quat = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        root_vel_w = self.asset.data.root_link_lin_vel_w
+        feet_pos_rel_w = (
+            self.asset.data.body_link_pos_w[:, self.body_ids]
+            - self.asset.data.root_link_pos_w.unsqueeze(1)
+        )
+        root_ang_vel_w = self.asset.data.root_link_ang_vel_w
+        root_rotation_vel_w = torch.cross(
+            root_ang_vel_w.unsqueeze(1).expand_as(feet_pos_rel_w),
+            feet_pos_rel_w,
+            dim=-1,
+        )
+        feet_vel_rel_b = quat_rotate_inverse(
+            root_quat,
+            self.asset.data.body_lin_vel_w[:, self.body_ids]
+            - root_vel_w.unsqueeze(1)
+            - root_rotation_vel_w,
+        )
+        command = self.command_manager.cmd_linvel_b[:, :2]
+        command_dir = command / command.norm(dim=-1, keepdim=True).clamp_min(
+            1e-6
+        )
+        forward_speed = (
+            feet_vel_rel_b[:, :, :2] * command_dir.unsqueeze(1)
+        ).sum(-1)
+        reward = torch.tanh(forward_speed.clamp_min(0.0) / self.speed_scale)
+        reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1)
+        active = (~self.command_manager.is_standing_env) & in_swing.any(
+            dim=1, keepdim=True
+        )
+        return reward, active
+
+
+class biped_swing_foot_placement(Reward):
+    """Encourage the swing foot to land ahead by a speed-scaled, bounded step."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        landing_phase: float = 0.8,
+        step_length_scale: float = 0.35,
+        position_sigma: float = 0.10,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.body_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(self.body_ids) != 2:
+            raise ValueError(
+                "biped_swing_foot_placement requires exactly two ordered feet"
+            )
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.landing_phase = float(landing_phase)
+        self.step_length_scale = float(step_length_scale)
+        self.position_sigma = float(position_sigma)
+        if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
+            raise ValueError("period must be positive and stance_ratio in (0, 1)")
+        if not 0.0 < self.landing_phase < 1.0:
+            raise ValueError("landing_phase must be in (0, 1)")
+        if self.step_length_scale <= 0.0 or self.position_sigma <= 0.0:
+            raise ValueError("step_length_scale and position_sigma must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        _, _, swing_phase = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        near_landing = swing_phase >= self.landing_phase
+        root_pos = self.asset.data.root_link_pos_w
+        feet_pos_w = self.asset.data.body_link_pos_w[:, self.body_ids]
+        feet_pos_b = quat_rotate_inverse(
+            yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1),
+            feet_pos_w - root_pos.unsqueeze(1),
+        )
+        command = self.command_manager.cmd_linvel_b[:, :2]
+        speed = command.norm(dim=-1, keepdim=True)
+        command_dir = command / speed.clamp_min(1e-6)
+        along_command = (feet_pos_b[:, :, :2] * command_dir.unsqueeze(1)).sum(-1)
+        target = self.step_length_scale * speed * self.period
+        reward = torch.exp(-((along_command - target) / self.position_sigma).square())
+        reward = (reward * near_landing).sum(dim=1, keepdim=True) / near_landing.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1)
+        active = (~self.command_manager.is_standing_env) & near_landing.any(
+            dim=1, keepdim=True
+        )
+        return reward, active
+
+
+class biped_stance_foot_velocity(Reward):
+    """Penalize horizontal motion of a foot when it is scheduled and observed in contact."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        speed_scale: float = 0.5,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.body_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(self.body_ids) != 2:
+            raise ValueError(
+                "biped_stance_foot_velocity requires exactly two ordered feet"
+            )
+        self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
+        self.contact_ids = self.contact_sensor.find_bodies(body_names, preserve_order=True)[0]
+        if len(self.contact_ids) != 2:
+            raise ValueError("biped_stance_foot_velocity requires two contact bodies")
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.speed_scale = float(speed_scale)
+        if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
+            raise ValueError("period must be positive and stance_ratio in (0, 1)")
+        if self.speed_scale <= 0.0:
+            raise ValueError("speed_scale must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        _, is_stance, _ = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        in_contact = (
+            self.contact_sensor.data.current_contact_time[:, self.contact_ids]
+            > self.env.physics_dt
+        )
+        stance_contact = is_stance & in_contact
+        feet_vel = self.asset.data.body_lin_vel_w[:, self.body_ids, :2]
+        cost = (feet_vel.norm(dim=-1) / self.speed_scale).square().clamp_max(1.0)
+        reward = -(cost * stance_contact).sum(dim=1, keepdim=True) / stance_contact.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1)
+        active = (~self.command_manager.is_standing_env) & stance_contact.any(
+            dim=1, keepdim=True
+        )
+        return reward, active
 
 
 class is_standing_env(Reward):
