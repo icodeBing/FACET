@@ -1,5 +1,5 @@
 import torch
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from isaaclab.assets import Articulation
@@ -33,7 +33,7 @@ class max_feet_height(Reward):
 
 
 class feet_lateral_separation(Reward):
-    """Penalize excessively wide lateral stance without forcing feet together."""
+    """Bound stance width and optionally preserve left/right foot ordering."""
 
     def __init__(
         self,
@@ -42,6 +42,10 @@ class feet_lateral_separation(Reward):
         body_names: list[str],
         max_separation: float = 0.28,
         scale: float = 0.08,
+        min_separation: float = 0.0,
+        knee_body_names: Optional[list[str]] = None,
+        min_knee_separation: float = 0.0,
+        order_scale: float = 0.12,
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -53,8 +57,33 @@ class feet_lateral_separation(Reward):
         self.body_ids = torch.tensor(self.body_ids, device=self.device)
         self.max_separation = float(max_separation)
         self.scale = float(scale)
-        if self.max_separation <= 0.0 or self.scale <= 0.0:
-            raise ValueError("max_separation and scale must be positive")
+        self.min_separation = float(min_separation)
+        self.min_knee_separation = float(min_knee_separation)
+        self.order_scale = float(order_scale)
+        if knee_body_names is not None:
+            self.knee_body_ids, self.knee_body_names = self.asset.find_bodies(
+                knee_body_names, preserve_order=True
+            )
+            if len(self.knee_body_ids) != 2:
+                raise ValueError(
+                    "feet_lateral_separation requires two ordered knee bodies"
+                )
+            self.knee_body_ids = torch.tensor(
+                self.knee_body_ids, device=self.device
+            )
+        else:
+            self.knee_body_ids = None
+        if (
+            self.max_separation <= 0.0
+            or self.scale <= 0.0
+            or self.min_separation < 0.0
+            or self.min_separation >= self.max_separation
+            or self.min_knee_separation < 0.0
+            or self.min_knee_separation >= self.max_separation
+            or (self.knee_body_ids is None and self.min_knee_separation > 0.0)
+            or self.order_scale <= 0.0
+        ):
+            raise ValueError("invalid lateral separation bounds or scales")
 
     def _compute(self) -> torch.Tensor:
         root_pos = self.asset.data.root_link_pos_w
@@ -66,6 +95,41 @@ class feet_lateral_separation(Reward):
         separation = (feet_pos_b[:, 0, 1] - feet_pos_b[:, 1, 1]).abs()
         excess = (separation - self.max_separation).clamp_min(0.0) / self.scale
         penalty = -excess.square().unsqueeze(1)
+        if self.min_separation > 0.0 or self.knee_body_ids is not None:
+            yaw_quat_b = yaw_quat(root_quat).unsqueeze(1)
+            foot_order_penalty = torch.zeros_like(excess)
+            if self.min_separation > 0.0:
+                feet_pos_yaw = quat_rotate_inverse(
+                    yaw_quat_b,
+                    self.asset.data.body_link_pos_w[:, self.body_ids]
+                    - root_pos.unsqueeze(1),
+                )
+                foot_signed_separation = (
+                    feet_pos_yaw[:, 0, 1] - feet_pos_yaw[:, 1, 1]
+                )
+                foot_error = (
+                    (self.min_separation - foot_signed_separation).clamp_min(0.0)
+                    / self.order_scale
+                ).clamp_max(2.0)
+                foot_order_penalty = foot_error.square()
+
+            knee_order_penalty = torch.zeros_like(excess)
+            if self.knee_body_ids is not None:
+                knees_pos_yaw = quat_rotate_inverse(
+                    yaw_quat_b,
+                    self.asset.data.body_link_pos_w[:, self.knee_body_ids]
+                    - root_pos.unsqueeze(1),
+                )
+                knee_signed_separation = (
+                    knees_pos_yaw[:, 0, 1] - knees_pos_yaw[:, 1, 1]
+                )
+                knee_error = (
+                    (self.min_knee_separation - knee_signed_separation).clamp_min(0.0)
+                    / self.order_scale
+                ).clamp_max(2.0)
+                knee_order_penalty = knee_error.square()
+
+            penalty -= (0.5 * (foot_order_penalty + knee_order_penalty)).unsqueeze(1)
         active = ~self.command_manager.is_standing_env
         return penalty, active.reshape(self.num_envs, 1)
 

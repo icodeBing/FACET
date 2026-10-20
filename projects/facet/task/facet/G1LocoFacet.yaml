@@ -40,25 +40,26 @@ reward:
       period: 0.8
       stance_ratio: 0.55
       nominal_height: 0.025
-      clearance: 0.07
+      clearance: 0.09
       height_sigma: 0.03
     biped_swing_forward:
-      weight: 0.2
+      weight: 0.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      step_length_scale: 0.35
-      min_step_length: 0.08
-      max_step_length: 0.45
+      # At 0.5, target stride is approximately command_speed * half-period.
+      step_length_scale: 0.5
+      min_step_length: 0.12
+      max_step_length: 0.4
       velocity_sigma: 0.35
     biped_swing_foot_placement:
-      weight: 0.25
+      weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      step_length_scale: 0.35
-      min_step_length: 0.08
-      max_step_length: 0.45
+      step_length_scale: 0.5
+      min_step_length: 0.12
+      max_step_length: 0.4
       position_sigma: 0.08
     biped_stance_foot_velocity:
       weight: 0.05
@@ -69,6 +70,10 @@ reward:
     feet_lateral_separation:
       weight: 1.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      knee_body_names: ["left_knee_link", "right_knee_link"]
+      min_separation: 0.1
+      min_knee_separation: 0.06
+      order_scale: 0.12
       max_separation: 0.28
       scale: 0.08
     biped_alternating_contact:
