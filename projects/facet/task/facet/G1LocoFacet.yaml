@@ -39,23 +39,27 @@ reward:
       body_names: ".*_ankle_roll_link"
       period: 0.8
       stance_ratio: 0.55
-      nominal_height: 0.035
-      clearance: 0.045
-      height_sigma: 0.05
+      nominal_height: 0.025
+      clearance: 0.07
+      height_sigma: 0.03
     biped_swing_forward:
       weight: 0.2
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      speed_scale: 0.5
+      step_length_scale: 0.35
+      min_step_length: 0.08
+      max_step_length: 0.45
+      velocity_sigma: 0.35
     biped_swing_foot_placement:
       weight: 0.25
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      landing_phase: 0.8
       step_length_scale: 0.35
-      position_sigma: 0.1
+      min_step_length: 0.08
+      max_step_length: 0.45
+      position_sigma: 0.08
     biped_stance_foot_velocity:
       weight: 0.05
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -73,15 +77,13 @@ reward:
       period: 0.8
       threshold: 0.55
 
-    # Keep the arms near the robot's validated nominal posture.  This is a
-    # soft posture prior, not a scripted arm trajectory, so FACET remains free
-    # to yield to external forces.
+    # Keep arms and wrists near their default pose; no phase-driven arm motion.
     joint_pos_default:
-      weight: 0.03
-      joint_names: [".*shoulder.*", ".*elbow_joint"]
+      weight: 0.05
+      joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]
     joint_vel_l2:
-      weight: 0.003
-      joint_names: [".*shoulder.*", ".*elbow_joint"]
+      weight: 0.006
+      joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]
     # A 0.8 s cycle with 55% stance leaves about 0.36 s for swing. The
     # inherited 0.5 s minimum-air-time penalty contradicted that phase target.
     feet_air_time:

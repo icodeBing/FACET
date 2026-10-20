@@ -32,6 +32,7 @@ input:
       .*ankle.*: 0.439
       .*shoulder.*: 0.173
       .*elbow_joint: 0.173
+      .*wrist.*: 0.087
     max_delay: 2
     alpha_range: [0.8, 1.0]
 
@@ -51,11 +52,11 @@ observation:
     gait_phase: {period: 0.8}
     gravity_multistep: {steps: 6, noise_std: 0.05}
     joint_pos_multistep:
-      joint_names: "(?!(.*wrist.*)).*"
+      joint_names: ".*"
       steps: 6
       noise_std: 0.05
     joint_vel_multistep:
-      joint_names: "(?!(.*wrist.*)).*"
+      joint_names: ".*"
       steps: 6
       noise_std: 0.2
     prev_actions: {steps: 2}
@@ -64,7 +65,7 @@ observation:
     root_angvel_b: {}
     root_linacc_substep: {flatten: true}
     joint_torques:
-      joint_names: "(?!(.*wrist.*)).*"
+      joint_names: ".*"
       scale: 100.0
     contact_indicator:
       body_names: [".*ankle_roll_link"]

@@ -453,7 +453,7 @@ class biped_swing_height(Reward):
 
 
 class biped_swing_forward(Reward):
-    """Reward command-aligned foot motion relative to the pelvis during swing."""
+    """Track the command-aligned velocity of a full swing-foot stride."""
 
     def __init__(
         self,
@@ -462,7 +462,10 @@ class biped_swing_forward(Reward):
         body_names: Names,
         period: float = 0.8,
         stance_ratio: float = 0.55,
-        speed_scale: float = 0.5,
+        step_length_scale: float = 0.35,
+        min_step_length: float = 0.08,
+        max_step_length: float = 0.45,
+        velocity_sigma: float = 0.35,
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -471,11 +474,19 @@ class biped_swing_forward(Reward):
             raise ValueError("biped_swing_forward requires exactly two ordered feet")
         self.period = float(period)
         self.stance_ratio = float(stance_ratio)
-        self.speed_scale = float(speed_scale)
+        self.step_length_scale = float(step_length_scale)
+        self.min_step_length = float(min_step_length)
+        self.max_step_length = float(max_step_length)
+        self.velocity_sigma = float(velocity_sigma)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
-        if self.speed_scale <= 0.0:
-            raise ValueError("speed_scale must be positive")
+        if (
+            self.step_length_scale <= 0.0
+            or self.min_step_length <= 0.0
+            or self.max_step_length < self.min_step_length
+            or self.velocity_sigma <= 0.0
+        ):
+            raise ValueError("invalid swing stride or velocity tracking parameters")
 
     def _compute(self) -> torch.Tensor:
         _, _, swing_phase = _biped_gait_phase(
@@ -507,18 +518,32 @@ class biped_swing_forward(Reward):
         forward_speed = (
             feet_vel_rel_b[:, :, :2] * command_dir.unsqueeze(1)
         ).sum(-1)
-        reward = torch.tanh(forward_speed.clamp_min(0.0) / self.speed_scale)
+        speed = command.norm(dim=-1, keepdim=True)
+        step_length = (self.step_length_scale * speed * self.period).clamp(
+            self.min_step_length, self.max_step_length
+        )
+        swing_duration = self.period * (1.0 - self.stance_ratio)
+        target_speed = (
+            6.0
+            * step_length
+            * swing_phase
+            * (1.0 - swing_phase)
+            / swing_duration
+        )
+        reward = torch.exp(-((forward_speed - target_speed) / self.velocity_sigma).square())
         reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
             dim=1, keepdim=True
         ).clamp_min(1)
-        active = (~self.command_manager.is_standing_env) & in_swing.any(
-            dim=1, keepdim=True
+        active = (
+            (~self.command_manager.is_standing_env)
+            & (speed > 0.05)
+            & in_swing.any(dim=1, keepdim=True)
         )
         return reward, active
 
 
 class biped_swing_foot_placement(Reward):
-    """Encourage the swing foot to land ahead by a speed-scaled, bounded step."""
+    """Track a smooth rear-to-front foot trajectory throughout swing."""
 
     def __init__(
         self,
@@ -527,8 +552,9 @@ class biped_swing_foot_placement(Reward):
         body_names: Names,
         period: float = 0.8,
         stance_ratio: float = 0.55,
-        landing_phase: float = 0.8,
         step_length_scale: float = 0.35,
+        min_step_length: float = 0.08,
+        max_step_length: float = 0.45,
         position_sigma: float = 0.10,
     ):
         super().__init__(env, weight)
@@ -540,21 +566,25 @@ class biped_swing_foot_placement(Reward):
             )
         self.period = float(period)
         self.stance_ratio = float(stance_ratio)
-        self.landing_phase = float(landing_phase)
         self.step_length_scale = float(step_length_scale)
+        self.min_step_length = float(min_step_length)
+        self.max_step_length = float(max_step_length)
         self.position_sigma = float(position_sigma)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
-        if not 0.0 < self.landing_phase < 1.0:
-            raise ValueError("landing_phase must be in (0, 1)")
-        if self.step_length_scale <= 0.0 or self.position_sigma <= 0.0:
-            raise ValueError("step_length_scale and position_sigma must be positive")
+        if (
+            self.step_length_scale <= 0.0
+            or self.min_step_length <= 0.0
+            or self.max_step_length < self.min_step_length
+            or self.position_sigma <= 0.0
+        ):
+            raise ValueError("invalid swing stride or position tracking parameters")
 
     def _compute(self) -> torch.Tensor:
         _, _, swing_phase = _biped_gait_phase(
             self.env, self.period, self.stance_ratio
         )
-        near_landing = swing_phase >= self.landing_phase
+        in_swing = swing_phase > 0.0
         root_pos = self.asset.data.root_link_pos_w
         feet_pos_w = self.asset.data.body_link_pos_w[:, self.body_ids]
         feet_pos_b = quat_rotate_inverse(
@@ -565,13 +595,19 @@ class biped_swing_foot_placement(Reward):
         speed = command.norm(dim=-1, keepdim=True)
         command_dir = command / speed.clamp_min(1e-6)
         along_command = (feet_pos_b[:, :, :2] * command_dir.unsqueeze(1)).sum(-1)
-        target = self.step_length_scale * speed * self.period
+        step_length = (self.step_length_scale * speed * self.period).clamp(
+            self.min_step_length, self.max_step_length
+        )
+        smooth_phase = swing_phase.square() * (3.0 - 2.0 * swing_phase)
+        target = step_length * (smooth_phase - 0.5)
         reward = torch.exp(-((along_command - target) / self.position_sigma).square())
-        reward = (reward * near_landing).sum(dim=1, keepdim=True) / near_landing.sum(
+        reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
             dim=1, keepdim=True
         ).clamp_min(1)
-        active = (~self.command_manager.is_standing_env) & near_landing.any(
-            dim=1, keepdim=True
+        active = (
+            (~self.command_manager.is_standing_env)
+            & (speed > 0.05)
+            & in_swing.any(dim=1, keepdim=True)
         )
         return reward, active
 
