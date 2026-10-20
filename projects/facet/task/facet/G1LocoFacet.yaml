@@ -21,14 +21,12 @@ command:
 
 reward:
   loco:
-    # G1LocoFlat locomotion objectives, evaluated against the FACET command.
-    linvel_exp: {weight: 1.5, dim: 2}
-    linvel_projection: {weight: 0.5}
+    # FACET reference tracking remains the planar translation objective.
+    # Keep yaw command tracking and biped-specific gait/posture regularizers.
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
 
-    # G1-specific gait regularization.  These terms constrain the physical
-    # realization of the FACET reference without changing the FACET command,
-    # impedance dynamics, or force-adaptation objective.
+    # G1-specific gait priors. These leave the FACET reference dynamics intact
+    # but add constraints to the policy's physical realization of that target.
     feet_clearance:
       weight: 1.0
       feet_names: ".*_ankle_roll_link"
@@ -36,6 +34,15 @@ reward:
       weight: 0.15
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
+    max_feet_height:
+      weight: 1.0
+      body_names: ".*_ankle_roll_link"
+      target_height: 0.1
+    feet_lateral_separation:
+      weight: 1.0
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      max_separation: 0.28
+      scale: 0.08
     biped_alternating_contact:
       weight: 0.35
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -47,4 +54,7 @@ reward:
     # to yield to external forces.
     joint_pos_default:
       weight: 0.03
+      joint_names: [".*shoulder.*", ".*elbow_joint"]
+    joint_vel_l2:
+      weight: 0.003
       joint_names: [".*shoulder.*", ".*elbow_joint"]

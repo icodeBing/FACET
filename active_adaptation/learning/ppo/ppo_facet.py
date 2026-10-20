@@ -65,8 +65,8 @@ class PPOConfig:
 
     compile: bool = False # slightly improve speed on some devices
 
-    # symmetry augmentation produces better gait and enhance efficiency
-    symaug: bool = True
+    # Optional symmetry augmentation; disabled by default for FACET training.
+    symaug: bool = False
     phase: str = "train"
     in_keys: Tuple[str, ...] = (OBS_KEY, OBS_PRIV_KEY, "ext", "ext_")
 
