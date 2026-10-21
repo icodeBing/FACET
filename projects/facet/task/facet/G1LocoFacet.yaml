@@ -11,14 +11,17 @@ command:
   virtual_mass_range: [2., 4., 8.]
   eef_body_name: null
   arm_body_name: null
-  ref_steps: [8, 16, 32]
-  temporal_smoothing: 32
+  # Stage 1: establish a stable straight-walking FACET baseline.  The
+  # impedance reference remains active; only its preview horizon is shortened
+  # so it does not fight the 0.8 s gait clock while posture is recovered.
+  ref_steps: [1, 2, 4]
+  temporal_smoothing: 4
   fixed_velocity: true
-  linvel_x_range: [-0.8, 1.4]
-  linvel_y_range: [-0.8, 0.8]
-  yawvel_range: [-2.0, 2.0]
-  stand_prob: 0.05
-  randomize_gait_phase: true
+  linvel_x_range: [0.4, 0.4]
+  linvel_y_range: [0.0, 0.0]
+  yawvel_range: [0.0, 0.0]
+  stand_prob: 0.0
+  randomize_gait_phase: false
 
 reward:
   loco:
@@ -33,6 +36,15 @@ reward:
     base_height_exp: {weight: 1.5, target_height: 0.74}
     angvel_xy_l2: {weight: 0.04, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
+
+    # Restore the posture anchors used by the validated direct-velocity task.
+    # These constrain the unlocked waist and prevent hip yaw/roll from being
+    # used as a shortcut for root-reference tracking.
+    joint_deviation_l2_waist: {weight: 1.0, joint_names: [waist.*]}
+    joint_deviation_l1_legs:
+      _target_: joint_deviation_l1
+      weight: 0.5
+      joint_names: [.*hip_roll_joint, .*hip_yaw_joint]
 
     # Phase-aware G1 gait shaping supplements, but does not replace, FACET
     # reference tracking. All phase terms share the policy's 0.8 s gait clock.

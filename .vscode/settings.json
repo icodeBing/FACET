@@ -1,0 +1,8 @@
+{
+  "files.associations": {
+    "*.urdf": "xml",
+    "*.xacro": "xml"
+  },
+  "urdf-visualizer.renderOnSave": true,
+  "urdf-visualizer.default.angleUnit": "radian"
+}
