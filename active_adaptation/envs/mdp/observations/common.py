@@ -119,6 +119,11 @@ class gait_phase(Observation):
             * self.env.step_dt
             * (2.0 * torch.pi / self.period)
         )
+        phase_offset = getattr(
+            self.env.command_manager, "gait_phase_offset", None
+        )
+        if phase_offset is not None:
+            phase = phase + phase_offset * (2.0 * torch.pi)
         return torch.stack((phase.sin(), phase.cos()), dim=-1)
 
     @override

@@ -18,11 +18,20 @@ command:
   linvel_y_range: [-0.8, 0.8]
   yawvel_range: [-2.0, 2.0]
   stand_prob: 0.05
+  randomize_gait_phase: true
 
 reward:
   loco:
-    # FACET reference tracking remains the planar translation objective.
-    # Keep yaw command tracking and biped-specific gait/posture regularizers.
+    # FACET tracks root/pelvis reference dynamics; no end-effector objective is
+    # configured. Leg joints stay free for gait, while arms use soft posture
+    # regularization and root/torso terms provide whole-body stabilization.
+    impedance_pos: {weight: 0.75}
+    impedance_vel: {weight: 1.5}
+    impedance_yaw_pos: {weight: 0.75}
+    impedance_yaw_vel: {weight: 1.0}
+    body_upright: {weight: 1.0, body_name: torso_link}
+    base_height_exp: {weight: 1.5, target_height: 0.74}
+    angvel_xy_l2: {weight: 0.04, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
 
     # Phase-aware G1 gait shaping supplements, but does not replace, FACET
@@ -68,12 +77,13 @@ reward:
       stance_ratio: 0.55
       speed_scale: 0.5
     feet_lateral_separation:
-      weight: 1.0
+      # Keep the anti-crossing guard without suppressing normal swing.
+      weight: 0.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
       min_separation: 0.1
       min_knee_separation: 0.06
-      order_scale: 0.12
+      order_scale: 0.16
       max_separation: 0.28
       scale: 0.08
     biped_alternating_contact:
@@ -84,10 +94,10 @@ reward:
 
     # Keep arms and wrists near their default pose; no phase-driven arm motion.
     joint_pos_default:
-      weight: 0.05
+      weight: 0.08
       joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]
     joint_vel_l2:
-      weight: 0.006
+      weight: 0.01
       joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]
     # A 0.8 s cycle with 55% stance leaves about 0.36 s for swing. The
     # inherited 0.5 s minimum-air-time penalty contradicted that phase target.

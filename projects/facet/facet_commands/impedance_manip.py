@@ -209,6 +209,7 @@ class ImpedanceCommandManager(Command):
         linvel_y_range=(-0.8, 0.8),
         yawvel_range=(-2.0, 2.0),
         stand_prob: float = 0.05,
+        randomize_gait_phase: bool = False,
     ) -> None:
         super().__init__(env)
 
@@ -233,6 +234,7 @@ class ImpedanceCommandManager(Command):
         self.linvel_y_range = tuple(float(x) for x in linvel_y_range)
         self.yawvel_range = tuple(float(x) for x in yawvel_range)
         self.stand_prob = float(stand_prob)
+        self.randomize_gait_phase = bool(randomize_gait_phase)
         
         # currently hardcoded in the kernels
         # self.base_kp_range = (4., 40.)
@@ -278,6 +280,7 @@ class ImpedanceCommandManager(Command):
             self.cmd_linvel_w = torch.zeros(self.num_envs, 3)
             self.cmd_yawvel_b = torch.zeros(self.num_envs, 1)
             self.cmd_base_height = torch.full((self.num_envs, 1), 0.74)
+            self.gait_phase_offset = torch.zeros(self.num_envs)
         
         self.force_impulse = ImpulseForce.zeros(self.num_envs, device=self.device)
         # self.force_pull = ConstantForce.zeros(self.num_envs, device=self.device)
@@ -436,6 +439,12 @@ class ImpedanceCommandManager(Command):
         self.asset.has_external_wrench = True
 
     def reset(self, env_ids: torch.Tensor):
+        if self.randomize_gait_phase:
+            self.gait_phase_offset[env_ids] = torch.randint(
+                0, 2, (len(env_ids),), device=self.device
+            ).float() * 0.5
+        else:
+            self.gait_phase_offset[env_ids] = 0.0
         root_link_pos = self.asset.data.root_link_pos_w[env_ids]
         root_link_rpy = euler_from_quat(self.asset.data.root_link_quat_w[env_ids])
         self.pos_base.pos_w[env_ids] = root_link_pos.unsqueeze(1)

@@ -95,20 +95,19 @@ reward:
       weight: 1.5
       target_height: 0.74
     joint_deviation_l2:
+      # Keep only the non-task upper limbs near their nominal pose. Leg joints
+      # must remain free to realize the contact and swing objectives.
       weight: 0.05
       joint_names:
-        - ".*hip.*"
-        - ".*knee.*"
-        - ".*ankle.*"
-        - "waist.*"
         - ".*shoulder.*"
         - ".*elbow_joint"
+        - ".*wrist.*"
     linvel_z_l2: {weight: 0.5}
-    angvel_xy_l2: {weight: 0.02, body_names: [pelvis, torso_link]}
+    angvel_xy_l2: {weight: 0.04, body_names: [pelvis, torso_link]}
     energy_l1: {weight: 2.0e-4}
     joint_acc_l2: {weight: 1.0e-7}
     joint_torques_l2: {weight: 5.0e-6}
-    joint_vel_l2: {weight: 1.0e-3, joint_names: [".*shoulder.*"]}
+    joint_vel_l2: {weight: 1.0e-3, joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]}
     action_rate_l2: {weight: 0.005}
     action_rate2_l2: {weight: 0.005}
     survival: {weight: 1.0}

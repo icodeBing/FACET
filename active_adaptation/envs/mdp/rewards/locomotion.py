@@ -376,8 +376,10 @@ class biped_alternating_contact(Reward):
         _, is_stance, _ = _biped_gait_phase(
             self.env, self.period, self.threshold
         )
-        # Preserve unitree_rl_lab's per-foot score in [0, 2].
-        reward = (is_stance == contact).float().sum(dim=1, keepdim=True)
+        # Score both feet independently.  Summing lets one foot compensate for
+        # a permanently dragged foot; the minimum keeps the alternating target
+        # meaningful for both legs while retaining the original [0, 2] scale.
+        reward = (is_stance == contact).float().mul(2.0).amin(dim=1, keepdim=True)
         active = ~self.command_manager.is_standing_env
         return reward, active.reshape(self.num_envs, 1)
 
@@ -386,6 +388,9 @@ def _biped_gait_phase(env, period: float, stance_ratio: float):
     phase = (
         env.episode_length_buf.float() * env.step_dt / period
     ).remainder(1.0)
+    phase_offset = getattr(env.command_manager, "gait_phase_offset", None)
+    if phase_offset is not None:
+        phase = (phase + phase_offset).remainder(1.0)
     foot_phase = torch.stack((phase, (phase + 0.5).remainder(1.0)), dim=1)
     is_stance = foot_phase < stance_ratio
     swing_phase = (
@@ -442,9 +447,10 @@ class biped_swing_height(Reward):
             torch.pi * swing_phase
         )
         reward = torch.exp(-((feet_height - target) / self.height_sigma).square())
-        reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
-            dim=1, keepdim=True
-        ).clamp_min(1)
+        # The scheduled swing foot must clear the ground; do not let the other
+        # foot hide a failed swing in the batch average.
+        reward = torch.where(in_swing, reward, torch.ones_like(reward))
+        reward = reward.amin(dim=1, keepdim=True)
         upright = (-self.asset.data.projected_gravity_b[:, 2]).clamp(0.0, 0.7) / 0.7
         active = (~self.command_manager.is_standing_env) & in_swing.any(
             dim=1, keepdim=True
@@ -531,9 +537,8 @@ class biped_swing_forward(Reward):
             / swing_duration
         )
         reward = torch.exp(-((forward_speed - target_speed) / self.velocity_sigma).square())
-        reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
-            dim=1, keepdim=True
-        ).clamp_min(1)
+        reward = torch.where(in_swing, reward, torch.ones_like(reward))
+        reward = reward.amin(dim=1, keepdim=True)
         active = (
             (~self.command_manager.is_standing_env)
             & (speed > 0.05)
@@ -601,9 +606,8 @@ class biped_swing_foot_placement(Reward):
         smooth_phase = swing_phase.square() * (3.0 - 2.0 * swing_phase)
         target = step_length * (smooth_phase - 0.5)
         reward = torch.exp(-((along_command - target) / self.position_sigma).square())
-        reward = (reward * in_swing).sum(dim=1, keepdim=True) / in_swing.sum(
-            dim=1, keepdim=True
-        ).clamp_min(1)
+        reward = torch.where(in_swing, reward, torch.ones_like(reward))
+        reward = reward.amin(dim=1, keepdim=True)
         active = (
             (~self.command_manager.is_standing_env)
             & (speed > 0.05)
