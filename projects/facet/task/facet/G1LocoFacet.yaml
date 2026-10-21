@@ -6,6 +6,14 @@ defaults:
 
 name: G1LocoFacet
 
+# Keep the unlocked waist from using a large backward lean as a tracking
+# shortcut.  These overrides intentionally affect only the waist joints.
+input:
+  action:
+    action_scaling:
+      waist_roll_joint: 0.32
+      waist_pitch_joint: 0.28
+
 command:
   _target_: ImpedanceCommandManager
   virtual_mass_range: [2., 4., 8.]
@@ -32,7 +40,8 @@ reward:
     impedance_vel: {weight: 1.5}
     impedance_yaw_pos: {weight: 0.75}
     impedance_yaw_vel: {weight: 1.0}
-    body_upright: {weight: 1.0, body_name: torso_link}
+    # Measures torso pitch and roll directly through the body gravity vector.
+    body_upright: {weight: 3.0, body_name: torso_link}
     base_height_exp: {weight: 1.5, target_height: 0.74}
     angvel_xy_l2: {weight: 0.04, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
@@ -40,7 +49,11 @@ reward:
     # Restore the posture anchors used by the validated direct-velocity task.
     # These constrain the unlocked waist and prevent hip yaw/roll from being
     # used as a shortcut for root-reference tracking.
-    joint_deviation_l2_waist: {weight: 1.0, joint_names: [waist.*]}
+    joint_deviation_l2_waist: {weight: 2.5, joint_names: [waist.*]}
+    joint_deviation_l2_waist_pitch:
+      _target_: joint_deviation_l2
+      weight: 1.5
+      joint_names: [waist_pitch_joint]
     joint_deviation_l1_legs:
       _target_: joint_deviation_l1
       weight: 0.5
@@ -68,20 +81,25 @@ reward:
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      # At 0.5, target stride is approximately command_speed * half-period.
-      step_length_scale: 0.5
-      min_step_length: 0.12
-      max_step_length: 0.4
+      # Conservative step targets while recovering a compact straight gait.
+      step_length_scale: 0.3
+      min_step_length: 0.05
+      max_step_length: 0.24
       velocity_sigma: 0.35
     biped_swing_foot_placement:
       weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      step_length_scale: 0.5
-      min_step_length: 0.12
-      max_step_length: 0.4
+      step_length_scale: 0.3
+      min_step_length: 0.05
+      max_step_length: 0.24
       position_sigma: 0.08
+    biped_stride_limit:
+      weight: 1.0
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      max_separation: 0.30
+      scale: 0.08
     biped_stance_foot_velocity:
       weight: 0.05
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -106,10 +124,10 @@ reward:
 
     # Keep arms and wrists near their default pose; no phase-driven arm motion.
     joint_pos_default:
-      weight: 0.08
+      weight: 0.5
       joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]
     joint_vel_l2:
-      weight: 0.01
+      weight: 0.02
       joint_names: [".*shoulder.*", ".*elbow_joint", ".*wrist.*"]
     # A 0.8 s cycle with 55% stance leaves about 0.36 s for swing. The
     # inherited 0.5 s minimum-air-time penalty contradicted that phase target.

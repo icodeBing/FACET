@@ -616,6 +616,50 @@ class biped_swing_foot_placement(Reward):
         return reward, active
 
 
+class biped_stride_limit(Reward):
+    """Penalize excessive fore-aft separation between the two feet."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        max_separation: float = 0.30,
+        scale: float = 0.08,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.body_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(self.body_ids) != 2:
+            raise ValueError("biped_stride_limit requires exactly two ordered feet")
+        self.body_ids = torch.tensor(self.body_ids, device=self.device)
+        self.max_separation = float(max_separation)
+        self.scale = float(scale)
+        if self.max_separation <= 0.0 or self.scale <= 0.0:
+            raise ValueError("max_separation and scale must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        root_quat = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        feet_pos_b = quat_rotate_inverse(
+            root_quat,
+            self.asset.data.body_link_pos_w[:, self.body_ids]
+            - self.asset.data.root_link_pos_w.unsqueeze(1),
+        )
+        command = self.command_manager.cmd_linvel_b[:, :2]
+        speed = command.norm(dim=-1, keepdim=True)
+        command_dir = command / speed.clamp_min(1e-6)
+        feet_along_command = (
+            feet_pos_b[:, :, :2] * command_dir.unsqueeze(1)
+        ).sum(dim=-1)
+        separation = (
+            feet_along_command[:, 0] - feet_along_command[:, 1]
+        ).abs()
+        excess = (separation - self.max_separation).clamp_min(0.0) / self.scale
+        penalty = -excess.square().clamp_max(4.0).unsqueeze(1)
+        active = (~self.command_manager.is_standing_env) & (speed > 0.05)
+        return penalty, active
+
+
 class biped_stance_foot_velocity(Reward):
     """Penalize horizontal motion of a foot when it is scheduled and observed in contact."""
 
