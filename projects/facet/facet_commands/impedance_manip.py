@@ -210,6 +210,11 @@ class ImpedanceCommandManager(Command):
         yawvel_range=(-2.0, 2.0),
         stand_prob: float = 0.05,
         randomize_gait_phase: bool = False,
+        disturbance_prob: float = 0.003,
+        disturbance_force_x_range=(80.0, 200.0),
+        disturbance_force_y_range=(80.0, 200.0),
+        disturbance_force_z_range=(0.0, 20.0),
+        disturbance_duration_range=(0.4, 0.6),
     ) -> None:
         super().__init__(env)
 
@@ -235,6 +240,21 @@ class ImpedanceCommandManager(Command):
         self.yawvel_range = tuple(float(x) for x in yawvel_range)
         self.stand_prob = float(stand_prob)
         self.randomize_gait_phase = bool(randomize_gait_phase)
+        if not 0.0 <= disturbance_prob <= 1.0:
+            raise ValueError("`disturbance_prob` must be in [0, 1]")
+        self.disturbance_prob = float(disturbance_prob)
+        self.disturbance_force_x_range = tuple(float(x) for x in disturbance_force_x_range)
+        self.disturbance_force_y_range = tuple(float(x) for x in disturbance_force_y_range)
+        self.disturbance_force_z_range = tuple(float(x) for x in disturbance_force_z_range)
+        self.disturbance_duration_range = tuple(float(x) for x in disturbance_duration_range)
+        for name, value in (
+            ("disturbance_force_x_range", self.disturbance_force_x_range),
+            ("disturbance_force_y_range", self.disturbance_force_y_range),
+            ("disturbance_force_z_range", self.disturbance_force_z_range),
+            ("disturbance_duration_range", self.disturbance_duration_range),
+        ):
+            if len(value) != 2 or value[0] > value[1]:
+                raise ValueError(f"`{name}` must be an ordered pair")
         
         # currently hardcoded in the kernels
         # self.base_kp_range = (4., 40.)
@@ -559,8 +579,17 @@ class ImpedanceCommandManager(Command):
             self.pos_eef.vel_w[:, 0] = self.eef_lin_vel_w
 
         self.force_impulse.time.add_(self.env.step_dt)
-        resample = self.force_impulse.expired & (torch.rand(self.num_envs, 1, device=self.device) < 0.003)
-        impulse_force = ImpulseForce.sample(self.num_envs, self.device, (40., 200.), (40., 200.), (0., 20.))
+        resample = self.force_impulse.expired & (
+            torch.rand(self.num_envs, 1, device=self.device) < self.disturbance_prob
+        )
+        impulse_force = ImpulseForce.sample(
+            self.num_envs,
+            self.device,
+            self.disturbance_force_x_range,
+            self.disturbance_force_y_range,
+            self.disturbance_force_z_range,
+            self.disturbance_duration_range,
+        )
         self.force_impulse = impulse_force.where(resample, self.force_impulse)
 
         self.reference_dynamics(self.env.step_dt)

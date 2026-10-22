@@ -11,6 +11,12 @@ name: G1LocoFacet
 input:
   action:
     action_scaling:
+      # The experiment isolates pelvis FACET compliance from arm strategies.
+      # Zero scaling makes JointPosition command the asset default pose for
+      # these joints while preserving the policy/action tensor interface.
+      ".*shoulder.*": 0.0
+      ".*elbow_joint": 0.0
+      ".*wrist.*": 0.0
       waist_roll_joint: 0.32
       waist_pitch_joint: 0.28
 
@@ -19,17 +25,24 @@ command:
   virtual_mass_range: [2., 4., 8.]
   eef_body_name: null
   arm_body_name: null
-  # Stage 1: establish a stable straight-walking FACET baseline.  The
-  # impedance reference remains active; only its preview horizon is shortened
-  # so it does not fight the 0.8 s gait clock while posture is recovered.
-  ref_steps: [1, 2, 4]
-  temporal_smoothing: 4
+  # Use the paper-scale preview and smoothing horizon.  A short [1,2,4]
+  # horizon made the policy chase instantaneous posture errors instead of
+  # building a consistent support-to-swing transition.
+  ref_steps: [8, 16, 32]
+  temporal_smoothing: 32
   fixed_velocity: true
-  linvel_x_range: [0.4, 0.4]
+  linvel_x_range: [0.25, 0.25]
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   stand_prob: 0.0
   randomize_gait_phase: false
+  # Short pelvis impulses are part of this experiment.  The impulse is applied
+  # both to the physical pelvis and to the FACET reference dynamics.
+  disturbance_prob: 0.003
+  disturbance_force_x_range: [80., 200.]
+  disturbance_force_y_range: [80., 200.]
+  disturbance_force_z_range: [0., 20.]
+  disturbance_duration_range: [0.4, 0.6]
 
 reward:
   loco:
@@ -117,7 +130,7 @@ reward:
       max_separation: 0.28
       scale: 0.08
     biped_alternating_contact:
-      weight: 0.35
+      weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       threshold: 0.55

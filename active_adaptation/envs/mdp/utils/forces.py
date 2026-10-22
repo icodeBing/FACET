@@ -121,12 +121,13 @@ class ImpulseForce(TensorClass):
         x_range: Tuple[float, float] = (20., 80.),
         y_range: Tuple[float, float] = (20., 80.),
         z_range: Tuple[float, float] = (-20., 20.),
+        duration_range: Tuple[float, float] = (0.40, 0.60),
         # x_offset_range: Tuple[float, float] = (-0.1, 0.1),
         # y_offset_range: Tuple[float, float] = (-0.1, 0.1),
         # z_offset_range: Tuple[float, float] = (-0.1, 0.1),
     ):
         duration = torch.zeros(size, 1, device=device)
-        duration.uniform_(0.40, 0.60)
+        duration.uniform_(*duration_range)
         peak = torch.zeros(size, 3, device=device)
         peak[:, 0].uniform_(*x_range)
         peak[:, 1].uniform_(*y_range)
