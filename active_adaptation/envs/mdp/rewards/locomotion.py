@@ -458,6 +458,98 @@ class biped_swing_height(Reward):
         return reward * upright.unsqueeze(1), active
 
 
+class biped_swing_knee_flexion(Reward):
+    """Require both knees to flex during their scheduled swing phase.
+
+    Foot clearance alone can be achieved by pitching the hip or ankle while
+    dragging an almost straight leg. This term gives each swing knee an
+    explicit, phase-shaped flexion target and uses a minimum across the two
+    legs so one leg cannot compensate for the other.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        joint_names: list[str],
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        target_flexion: float = 0.62,
+        flexion_sigma: float = 0.16,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.knee_ids = self.asset.find_joints(joint_names, preserve_order=True)[0]
+        if len(self.knee_ids) != 2:
+            raise ValueError("biped_swing_knee_flexion requires two ordered knees")
+        self.knee_ids = torch.tensor(self.knee_ids, device=self.device)
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.target_flexion = float(target_flexion)
+        self.flexion_sigma = float(flexion_sigma)
+        self.default_knee = self.asset.data.default_joint_pos[:, self.knee_ids].clone()
+
+    def _compute(self) -> torch.Tensor:
+        _, _, swing_phase = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        in_swing = swing_phase > 0.0
+        knee = self.asset.data.joint_pos[:, self.knee_ids]
+        target = self.default_knee + self.target_flexion * torch.sin(
+            torch.pi * swing_phase
+        )
+        error = ((knee - target) / self.flexion_sigma).square()
+        reward = torch.exp(-error)
+        reward = torch.where(in_swing, reward, torch.ones_like(reward))
+        reward = reward.amin(dim=1, keepdim=True)
+        active = (~self.command_manager.is_standing_env) & in_swing.any(
+            dim=1, keepdim=True
+        )
+        return reward, active
+
+
+class biped_knee_phase_symmetry(Reward):
+    """Match left/right knee flexion to the same gait-relative trajectory."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        joint_names: list[str],
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        target_flexion: float = 0.62,
+        sigma: float = 0.18,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        ids = self.asset.find_joints(joint_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("biped_knee_phase_symmetry requires two ordered knees")
+        self.knee_ids = torch.tensor(ids, device=self.device)
+        self.default = self.asset.data.default_joint_pos[:, self.knee_ids].clone()
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.target_flexion = float(target_flexion)
+        self.sigma = float(sigma)
+
+    def _compute(self) -> torch.Tensor:
+        _, _, swing_phase = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        knee = self.asset.data.joint_pos[:, self.knee_ids]
+        target = self.default + self.target_flexion * torch.sin(
+            torch.pi * swing_phase
+        )
+        error = (knee - target).abs() / self.sigma
+        # Both legs must follow their own half-cycle target.
+        reward = torch.exp(-error).amin(dim=1, keepdim=True)
+        active = (~self.command_manager.is_standing_env) & (
+            swing_phase > 0.0
+        ).any(dim=1, keepdim=True)
+        return reward, active
+
+
 class biped_swing_forward(Reward):
     """Track the command-aligned velocity of a full swing-foot stride."""
 

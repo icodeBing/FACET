@@ -35,7 +35,9 @@ command:
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   stand_prob: 0.0
-  randomize_gait_phase: false
+  # Train both left-first and right-first episodes to prevent a fixed
+  # phase-dependent single-leg solution.
+  randomize_gait_phase: true
   # Short pelvis impulses are part of this experiment.  The impulse is applied
   # both to the physical pelvis and to the FACET reference dynamics.
   disturbance_prob: 0.003
@@ -89,24 +91,38 @@ reward:
       nominal_height: 0.025
       clearance: 0.09
       height_sigma: 0.03
+    biped_swing_knee_flexion:
+      weight: 1.0
+      joint_names: ["left_knee_joint", "right_knee_joint"]
+      period: 0.8
+      stance_ratio: 0.55
+      target_flexion: 0.62
+      flexion_sigma: 0.16
+    biped_knee_phase_symmetry:
+      weight: 0.35
+      joint_names: ["left_knee_joint", "right_knee_joint"]
+      period: 0.8
+      stance_ratio: 0.55
+      target_flexion: 0.62
+      sigma: 0.18
     biped_swing_forward:
       weight: 0.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
       # Conservative step targets while recovering a compact straight gait.
-      step_length_scale: 0.3
-      min_step_length: 0.05
-      max_step_length: 0.24
+      step_length_scale: 0.6
+      min_step_length: 0.08
+      max_step_length: 0.30
       velocity_sigma: 0.35
     biped_swing_foot_placement:
       weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      step_length_scale: 0.3
-      min_step_length: 0.05
-      max_step_length: 0.24
+      step_length_scale: 0.6
+      min_step_length: 0.08
+      max_step_length: 0.30
       position_sigma: 0.08
     biped_stride_limit:
       weight: 1.0
@@ -148,3 +164,18 @@ reward:
       weight: 0.5
       body_names: ".*ankle_roll_link"
       thres: 0.3
+
+    # FACET evaluation telemetry. Logged but disabled, so it does not alter training.
+    facet_external_force_norm: {weight: 1.0, enabled: false}
+    facet_external_force_active: {weight: 1.0, enabled: false}
+    facet_pelvis_ref_pos_error: {weight: 1.0, enabled: false}
+    facet_pelvis_ref_vel_error: {weight: 1.0, enabled: false}
+    facet_pelvis_pitch_roll_abs: {weight: 1.0, enabled: false}
+    facet_leg_joint_pos_dev:
+      weight: 1.0
+      enabled: false
+      joint_names: [".*hip_.*", ".*knee.*", ".*ankle.*"]
+    facet_leg_joint_vel_rms:
+      weight: 1.0
+      enabled: false
+      joint_names: [".*hip_.*", ".*knee.*", ".*ankle.*"]
