@@ -2,7 +2,8 @@ import torch
 
 from typing import TYPE_CHECKING
 from active_adaptation.utils.math import (
-    quat_rotate, quat_rotate_inverse, normalize, yaw_quat
+    quat_rotate, quat_rotate_inverse, normalize, yaw_quat, quat_mul,
+    quat_conjugate, euler_from_quat,
 )
 
 if TYPE_CHECKING:
@@ -130,6 +131,52 @@ class feet_orientation(Reward):
         reward_alignment = - (self.feet_fwd - self.body_fwd).square().sum(-1)
         # reward_alignment = dot(self.feet_fwd, self.body_fwd).square().squeeze(-1)
         return (reward_alignment).sum(1, True)
+
+
+class feet_pitch_neutral(Reward):
+    """Keep both feet near a neutral pitch relative to the torso.
+
+    The existing ``feet_orientation`` reward intentionally removes pitch and
+    roll with ``yaw_quat``.  This term restores only the missing pitch
+    constraint, using the torso frame so normal pelvis pitch compliance is not
+    penalized as an absolute world-frame foot tilt.
+    """
+
+    def __init__(
+        self,
+        env,
+        feet_names: str,
+        weight: float,
+        body_name: str = "torso_link",
+        target_pitch: float = 0.0,
+        pitch_sigma: float = 0.12,
+        enabled: bool = True,
+    ):
+        super().__init__(env, weight, enabled)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        self.feet_id = self.asset.find_bodies(feet_names, preserve_order=True)[0]
+        if len(self.feet_id) != 2:
+            raise ValueError("feet_pitch_neutral requires exactly two ordered feet")
+        self.body_id = self.asset.find_bodies(body_name, preserve_order=True)[0]
+        if len(self.body_id) != 1:
+            raise ValueError("feet_pitch_neutral requires exactly one reference body")
+        self.body_id = self.body_id[0]
+        self.target_pitch = float(target_pitch)
+        self.pitch_sigma = float(pitch_sigma)
+        if self.pitch_sigma <= 0.0:
+            raise ValueError("pitch_sigma must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
+        feet_quat = self.asset.data.body_quat_w[:, self.feet_id]
+        relative_quat = quat_mul(
+            quat_conjugate(torso_quat).expand_as(feet_quat), feet_quat
+        )
+        pitch = euler_from_quat(relative_quat)[..., 1]
+        reward = torch.exp(
+            -((pitch - self.target_pitch) / self.pitch_sigma).square()
+        )
+        return reward.amin(dim=1, keepdim=True)
 
     # def debug_draw(self):
     #     feet_pos = self.asset.data.body_link_pos_w[:, self.feet_id]

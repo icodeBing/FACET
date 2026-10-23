@@ -31,7 +31,7 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  linvel_x_range: [0.25, 0.25]
+  linvel_x_range: [0.6, 0.6]
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   stand_prob: 0.0
@@ -83,6 +83,12 @@ reward:
       weight: 0.15
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
+    feet_pitch_neutral:
+      weight: 0.35
+      feet_names: ".*_ankle_roll_link"
+      body_name: torso_link
+      target_pitch: 0.0
+      pitch_sigma: 0.12
     biped_swing_height:
       weight: 1.0
       body_names: ".*_ankle_roll_link"
