@@ -99,6 +99,142 @@ class facet_leg_joint_vel_rms(Reward):
         return velocity.square().mean(dim=-1, keepdim=True).sqrt()
 
 
+class _FacetFootDiagnostic(Reward):
+    """Base for scalar diagnostics attached to one ordered foot."""
+
+    def __init__(self, env, body_names, foot_index: int = 0, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.contact_sensor = env.scene.sensors["contact_forces"]
+        body_ids, _ = self.contact_sensor.find_bodies(body_names, preserve_order=True)
+        if len(body_ids) != 2 or foot_index not in (0, 1):
+            raise ValueError("foot diagnostics require two ordered foot bodies")
+        self.body_id = body_ids[foot_index]
+        self.foot_index = foot_index
+
+    def _contact(self):
+        return self.contact_sensor.data.current_contact_time[:, self.body_id:self.body_id + 1] > 0.0
+
+
+class facet_foot_contact(_FacetFootDiagnostic):
+    """Instantaneous left/right foot contact state (0 or 1)."""
+
+    def _compute(self):
+        return self._contact().float()
+
+
+class facet_foot_air_time(_FacetFootDiagnostic):
+    """Current air time; it resets to zero at touchdown."""
+
+    def _compute(self):
+        return self.contact_sensor.data.current_air_time[:, self.body_id:self.body_id + 1]
+
+
+class facet_foot_touchdown_interval(_FacetFootDiagnostic):
+    """Time between consecutive touchdowns for the selected foot."""
+
+    def __init__(self, env, body_names, foot_index: int = 0, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, body_names, foot_index, weight, enabled)
+        self.prev_contact = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.device)
+        self.last_touchdown = torch.full((self.num_envs, 1), -1.0, device=self.device)
+        self.interval = torch.zeros(self.num_envs, 1, device=self.device)
+
+    def reset(self, env_ids):
+        self.prev_contact[env_ids] = False
+        self.last_touchdown[env_ids] = -1.0
+        self.interval[env_ids] = 0.0
+
+    def _compute(self):
+        contact = self._contact()
+        touchdown = contact & ~self.prev_contact
+        now = self.env.episode_length_buf.to(torch.float32).unsqueeze(1) * self.env.step_dt
+        valid = touchdown & (self.last_touchdown >= 0.0)
+        self.interval = torch.where(valid, now - self.last_touchdown, self.interval)
+        self.last_touchdown = torch.where(touchdown, now, self.last_touchdown)
+        self.prev_contact = contact
+        return self.interval
+
+
+class facet_foot_step_length(_FacetFootDiagnostic):
+    """Horizontal distance travelled by a foot between touchdowns."""
+
+    def __init__(self, env, body_names, foot_index: int = 0, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, body_names, foot_index, weight, enabled)
+        self.asset = env.command_manager.asset
+        self.prev_contact = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.device)
+        self.last_touchdown_pos = torch.zeros(self.num_envs, 2, device=self.device)
+        self.step_length = torch.zeros(self.num_envs, 1, device=self.device)
+
+    def reset(self, env_ids):
+        self.prev_contact[env_ids] = False
+        self.last_touchdown_pos[env_ids] = self.asset.data.body_pos_w[env_ids, self.body_id, :2]
+        self.step_length[env_ids] = 0.0
+
+    def _compute(self):
+        contact = self._contact()
+        touchdown = contact & ~self.prev_contact
+        pos = self.asset.data.body_pos_w[:, self.body_id, :2]
+        distance = (pos - self.last_touchdown_pos).norm(dim=-1, keepdim=True)
+        self.step_length = torch.where(touchdown, distance, self.step_length)
+        self.last_touchdown_pos = torch.where(touchdown, pos, self.last_touchdown_pos)
+        self.prev_contact = contact
+        return self.step_length
+
+
+class facet_foot_knee_peak_flexion(_FacetFootDiagnostic):
+    """Peak knee flexion offset observed during the current swing."""
+
+    def __init__(self, env, body_names, knee_names, foot_index: int = 0, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, body_names, foot_index, weight, enabled)
+        self.asset = env.command_manager.asset
+        knee_ids, _ = self.asset.find_joints(knee_names, preserve_order=True)
+        if len(knee_ids) != 2:
+            raise ValueError("knee diagnostics require two ordered knee joints")
+        self.knee_id = knee_ids[foot_index]
+        self.default_knee = self.asset.data.default_joint_pos[:, self.knee_id:self.knee_id + 1]
+        self.prev_contact = torch.zeros(self.num_envs, 1, dtype=torch.bool, device=self.device)
+        self.peak = torch.zeros(self.num_envs, 1, device=self.device)
+
+    def reset(self, env_ids):
+        self.prev_contact[env_ids] = False
+        self.peak[env_ids] = 0.0
+
+    def _compute(self):
+        contact = self._contact()
+        knee_flexion = (self.asset.data.joint_pos[:, self.knee_id:self.knee_id + 1] - self.default_knee).clamp_min(0.0)
+        self.peak = torch.where(contact, self.peak, torch.maximum(self.peak, knee_flexion))
+        touchdown = contact & ~self.prev_contact
+        self.peak = torch.where(touchdown, knee_flexion, self.peak)
+        self.prev_contact = contact
+        return self.peak
+
+
+class facet_root_y_position(Reward):
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = env.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.root_link_pos_w[:, 1:2]
+
+
+class facet_root_yaw(Reward):
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = env.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.heading_w[:, None]
+
+
+class facet_root_yaw_rate(Reward):
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = env.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.root_link_ang_vel_w[:, 2:3]
+
+
 class impedance_pos(Reward[ImpedanceCommandManager]):
     def __init__(self, env, weight: float):
         super().__init__(env, weight)

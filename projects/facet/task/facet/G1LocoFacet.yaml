@@ -52,13 +52,15 @@ reward:
     # configured. Leg joints stay free for gait, while arms use soft posture
     # regularization and root/torso terms provide whole-body stabilization.
     impedance_pos: {weight: 0.75}
-    impedance_vel: {weight: 1.5}
+    # The previous run kept walking but retained roughly 0.29 m/s FACET
+    # velocity error. Increase tracking pressure without changing the command.
+    impedance_vel: {weight: 2.0}
     impedance_yaw_pos: {weight: 0.75}
-    impedance_yaw_vel: {weight: 1.0}
+    impedance_yaw_vel: {weight: 1.5}
     # Measures torso pitch and roll directly through the body gravity vector.
     body_upright: {weight: 3.0, body_name: torso_link}
     base_height_exp: {weight: 1.5, target_height: 0.74}
-    angvel_xy_l2: {weight: 0.04, body_names: [pelvis, torso_link]}
+    angvel_xy_l2: {weight: 0.06, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
 
     # Restore the posture anchors used by the validated direct-velocity task.
@@ -105,14 +107,14 @@ reward:
       target_flexion: 0.62
       flexion_sigma: 0.16
     biped_knee_phase_symmetry:
-      weight: 0.35
+      weight: 0.7
       joint_names: ["left_knee_joint", "right_knee_joint"]
       period: 0.8
       stance_ratio: 0.55
       target_flexion: 0.62
       sigma: 0.18
     biped_swing_forward:
-      weight: 0.5
+      weight: 0.65
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -143,7 +145,7 @@ reward:
       speed_scale: 0.5
     feet_lateral_separation:
       # Keep the anti-crossing guard without suppressing normal swing.
-      weight: 0.5
+      weight: 0.7
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
       min_separation: 0.1
@@ -156,6 +158,32 @@ reward:
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       threshold: 0.55
+
+    # Per-foot and root telemetry. These terms are computed and logged but do
+    # not enter the optimization objective.
+    facet_left_foot_contact:
+      {_target_: facet_foot_contact, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 0}
+    facet_right_foot_contact:
+      {_target_: facet_foot_contact, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 1}
+    facet_left_foot_air_time:
+      {_target_: facet_foot_air_time, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 0}
+    facet_right_foot_air_time:
+      {_target_: facet_foot_air_time, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 1}
+    facet_left_foot_touchdown_interval:
+      {_target_: facet_foot_touchdown_interval, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 0}
+    facet_right_foot_touchdown_interval:
+      {_target_: facet_foot_touchdown_interval, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 1}
+    facet_left_foot_step_length:
+      {_target_: facet_foot_step_length, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 0}
+    facet_right_foot_step_length:
+      {_target_: facet_foot_step_length, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], foot_index: 1}
+    facet_left_foot_knee_peak_flexion:
+      {_target_: facet_foot_knee_peak_flexion, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], knee_names: ["left_knee_joint", "right_knee_joint"], foot_index: 0}
+    facet_right_foot_knee_peak_flexion:
+      {_target_: facet_foot_knee_peak_flexion, weight: 1.0, enabled: false, body_names: ["left_ankle_roll_link", "right_ankle_roll_link"], knee_names: ["left_knee_joint", "right_knee_joint"], foot_index: 1}
+    facet_root_y_position: {weight: 1.0, enabled: false}
+    facet_root_yaw: {weight: 1.0, enabled: false}
+    facet_root_yaw_rate: {weight: 1.0, enabled: false}
 
     # Keep arms and wrists near their default pose; no phase-driven arm motion.
     joint_pos_default:
@@ -170,6 +198,9 @@ reward:
       weight: 0.5
       body_names: ".*ankle_roll_link"
       thres: 0.3
+    feet_sliding:
+      weight: 0.3
+      body_names: ".*_ankle_roll_link"
 
     # FACET evaluation telemetry. Logged but disabled, so it does not alter training.
     facet_external_force_norm: {weight: 1.0, enabled: false}
