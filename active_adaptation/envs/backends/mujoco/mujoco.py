@@ -528,8 +528,9 @@ class MjContactSensor:
 class MJScene:
     num_envs = 1
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, headless: bool = False):
         self.cfg = cfg
+        self.headless = headless
         self.articulations: dict[str, MJArticulation] = {}
         self.sensors = {}
         
@@ -585,9 +586,14 @@ class MJScene:
         for sensor in self.sensors.values():
             sensor._initialize()
 
-        self.viewer = mujoco.viewer.launch_passive(self.articulations["robot"].mj_model, self.articulations["robot"].mj_data)
-        self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-        self.viewer.cam.trackbodyid = 1
+        self.viewer = None
+        if not self.headless:
+            self.viewer = mujoco.viewer.launch_passive(
+                self.articulations["robot"].mj_model,
+                self.articulations["robot"].mj_data,
+            )
+            self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            self.viewer.cam.trackbodyid = 1
 
         self.mj_model = self.articulations["robot"].mj_model
         self.mj_data = self.articulations["robot"].mj_data
@@ -615,6 +621,8 @@ class MJScene:
         return result
 
     def create_arrow_marker(self, radius: float, rgba):
+        if self.viewer is None:
+            raise RuntimeError("MuJoCo markers require headless=false")
         scene = self.viewer.user_scn
         scene.ngeom += 1
         mujoco.mjv_initGeom(
@@ -628,6 +636,8 @@ class MJScene:
         return MjvGeom(scene.geoms[scene.ngeom - 1])
     
     def create_sphere_marker(self, radius: float, rgba):
+        if self.viewer is None:
+            raise RuntimeError("MuJoCo markers require headless=false")
         scene = self.viewer.user_scn
         scene.ngeom += 1
         mujoco.mjv_initGeom(
@@ -645,20 +655,59 @@ class MJSim:
     
     device = "cpu"
 
-    def __init__(self, scene: MJScene):
+    def __init__(self, scene: MJScene, camera_cfg=None):
         self.scene = scene
         self.mj_model = scene.mj_model
         self.mj_data = scene.mj_data
+        self._renderer = None
+        camera_cfg = dict(camera_cfg or {})
+        self._camera = mujoco.MjvCamera()
+        mujoco.mjv_defaultCamera(self._camera)
+        self._camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        self._camera.trackbodyid = int(camera_cfg.get("trackbodyid", 1))
+        self._camera.azimuth = float(camera_cfg.get("azimuth", 135.0))
+        self._camera.elevation = float(camera_cfg.get("elevation", -15.0))
+        self._camera.distance = float(camera_cfg.get("distance", 3.2))
+        self._camera.lookat[:] = np.asarray(
+            camera_cfg.get("lookat", [0.0, 0.0, 0.75]), dtype=np.float64
+        )
+        self._camera.fovy = float(camera_cfg.get("fovy", 45.0))
+        if self.scene.viewer is not None:
+            self.scene.viewer.cam.type = self._camera.type
+            self.scene.viewer.cam.trackbodyid = self._camera.trackbodyid
+            self.scene.viewer.cam.azimuth = self._camera.azimuth
+            self.scene.viewer.cam.elevation = self._camera.elevation
+            self.scene.viewer.cam.distance = self._camera.distance
+            self.scene.viewer.cam.lookat[:] = self._camera.lookat
+            self.scene.viewer.cam.fovy = self._camera.fovy
         # self.timer = Timer(self.get_physics_dt())
 
     def render(self):
-        self.scene.viewer.sync()
+        if self.scene.viewer is not None:
+            self.scene.viewer.sync()
+
+    def render_rgb_array(self, width: int = 960, height: int = 540):
+        if self._renderer is None or self._renderer.width != width or self._renderer.height != height:
+            if self._renderer is not None:
+                self._renderer.close()
+            # MuJoCo's offscreen framebuffer defaults to 640x480 in many
+            # MJCFs.  Renderer dimensions cannot exceed that buffer, so grow
+            # it before constructing the renderer for higher-resolution video.
+            self.mj_model.vis.global_.offwidth = max(
+                int(self.mj_model.vis.global_.offwidth), int(width)
+            )
+            self.mj_model.vis.global_.offheight = max(
+                int(self.mj_model.vis.global_.offheight), int(height)
+            )
+            self._renderer = mujoco.Renderer(self.mj_model, height=height, width=width)
+        self._renderer.update_scene(self.mj_data, camera=self._camera)
+        return self._renderer.render()
 
     def get_physics_dt(self):
         return self.mj_model.opt.timestep
 
     def has_gui(self):
-        return True
+        return self.scene.viewer is not None
 
     def step(self, render: bool=False):
         mujoco.mj_step(self.mj_model, self.mj_data)

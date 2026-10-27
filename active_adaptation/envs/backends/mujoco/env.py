@@ -59,8 +59,8 @@ class MujocoBackendEnv(_EnvBase):
             contact_forces = "robot"
             terrain = TERRAINS_MUJOCO.get(self.cfg.terrain, TERRAINS_MUJOCO["plane"])
 
-        scene = MJScene(SceneCfg())
-        sim = MJSim(scene)
+        scene = MJScene(SceneCfg(), headless=self.headless)
+        sim = MJSim(scene, camera_cfg=self.cfg.get("camera", {}))
         self.scene = MujocoSceneAdapter(scene)
         self.sim = MujocoSimAdapter(sim)
         self.terrain_type = "plane"

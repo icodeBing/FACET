@@ -77,6 +77,7 @@ def main(cfg: DictConfig):
     # KeyboardInterrupt because the recorder is a context manager that flushes
     # buffered frames on exit.
     record_enabled = bool(cfg.get("record_video", False))
+    record_steps = int(cfg.get("record_steps", 0))
     video_dir = FILE_PATH / "videos"
     time_str = datetime.datetime.now().strftime("%m-%d_%H-%M")
     video_path = video_dir / f"{cfg.task.name}-{time_str}.mp4"
@@ -92,6 +93,10 @@ def main(cfg: DictConfig):
                 if record_enabled:
                     rec.add_frame()
 
+                if record_enabled and record_steps > 0 and i + 1 >= record_steps:
+                    print(f"Finished recording {record_steps} control steps")
+                    break
+
                 if len(episode_stats) >= env.num_envs:
                     print("Step", i)
                     for k, v in sorted(episode_stats.pop().items(True, True)):
@@ -106,4 +111,3 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-

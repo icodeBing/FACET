@@ -17,6 +17,7 @@ from active_adaptation.utils.video_recorder import (
     VideoRecorder,
     NullVideoRecorder,
     IsaacVideoRecorder,
+    MujocoVideoRecorder,
 )
 from active_adaptation.envs.utils import GroundQuery
 from active_adaptation.registry import RegistryMixin
@@ -581,6 +582,8 @@ class _EnvBase(EnvBase, RegistryMixin):
             return NullVideoRecorder()
         if self.backend == "isaac":
             return IsaacVideoRecorder(self, path, enabled=True)
+        if self.backend == "mujoco":
+            return MujocoVideoRecorder(self, path, enabled=True)
         # Other backends: return a no-op recorder by default.
         return NullVideoRecorder()
 
@@ -634,4 +637,3 @@ class _EnvBase(EnvBase, RegistryMixin):
             elif self.backend == "mjlab" and self.sim.has_gui():
                 self.sim.viewer.close()
             super().close(raise_if_closed=raise_if_closed)
-

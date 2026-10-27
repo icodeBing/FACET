@@ -77,3 +77,28 @@ class IsaacVideoRecorder(VideoRecorder):
         self._writer = None
         print(f"Video saved to: {self._path}")
 
+
+class MujocoVideoRecorder(VideoRecorder):
+    """Offscreen MuJoCo recorder; does not require the interactive viewer."""
+
+    def __init__(self, env, path, enabled=True, fps=None, width=960, height=540):
+        self._env = env
+        self._enabled = bool(enabled)
+        self._path = Path(path)
+        self._fps = fps or int(1.0 / float(getattr(env, "step_dt", 1.0)))
+        self._width, self._height = width, height
+        self._writer = None
+        if self._enabled:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._writer = imageio.get_writer(str(self._path), fps=self._fps, codec="libx264")
+
+    def add_frame(self):
+        if self._writer is not None:
+            frame = self._env.sim._sim.render_rgb_array(self._width, self._height)
+            self._writer.append_data(np.asarray(frame, dtype=np.uint8))
+
+    def close(self):
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+            print(f"Video saved to: {self._path}")

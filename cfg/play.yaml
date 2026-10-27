@@ -8,6 +8,18 @@ backend: isaac
 device: cuda
 
 record_video: false
+# Number of policy control steps to record; <=0 means run until Ctrl+C.
+record_steps: 0
+
+# MuJoCo camera.  The tracking camera follows body id 1 (the robot root).
+# azimuth/elevation are degrees; distance/lookat are meters; fovy is degrees.
+camera:
+  trackbodyid: 1
+  azimuth: 135.0
+  elevation: -15.0
+  distance: 3.2
+  lookat: [0.0, 0.0, 0.75]
+  fovy: 45.0
 
 app: # isaac-specific
   headless: ${..headless}
