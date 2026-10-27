@@ -71,7 +71,10 @@ def raymap(width: int, height: int, fov: float) -> Float[torch.Tensor, "height w
 
 
 class external_forces(Observation):
-    supported_backends = ("isaac",)
+    # MuJoCo exposes the same normalized body-frame applied-force buffer as
+    # Isaac (``_external_force_b``), so keep the observation shape identical
+    # for FACET student/adaptation rollouts.
+    supported_backends = ("isaac", "mujoco")
     def __init__(self, env, body_names, divide_by_mass: bool=True, scale: float = 1.0):
         super().__init__(env)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -94,7 +97,7 @@ class external_forces(Observation):
 
 
 class external_torques(Observation):
-    supported_backends = ("isaac",)
+    supported_backends = ("isaac", "mujoco")
     def __init__(self, env, body_names, divide_by_mass: bool=True, scale: float = 0.2):
         super().__init__(env)
         self.asset: Articulation = self.env.scene.articulations["robot"]

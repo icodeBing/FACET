@@ -43,9 +43,17 @@ class root_linacc_substep(Observation):
         self.asset: Articulation = self.env.scene.articulations["robot"]
         if steps is None:
             steps = self.env.decimation
-        shape = (self.num_envs, steps, 3)
+        self.steps = int(steps)
+        self.decimation = int(self.env.decimation)
+        if self.steps > self.decimation:
+            raise ValueError(
+                f"root_linacc_substep steps ({self.steps}) cannot exceed "
+                f"environment decimation ({self.decimation})"
+            )
+        shape = (self.num_envs, self.steps, 3)
         self.lin_acc_substep = torch.zeros(shape, device=self.env.device)
         self.prev_linvel_b = torch.zeros(self.num_envs, 3, device=self.env.device)
+        self._last_sample_slot = -1
 
     @override
     def reset(self, env_ids: torch.Tensor):
@@ -60,14 +68,27 @@ class root_linacc_substep(Observation):
 
     @override
     def post_step(self, substep):
+        if substep == 0:
+            self._last_sample_slot = -1
         root_link_quat_w = self.asset.data.root_link_quat_w
         linvel_b = quat_rotate_inverse(
             root_link_quat_w,
             self.asset.data.body_lin_vel_w[:, 0]
         )
-        self.lin_acc_substep[:, substep] = (
-            linvel_b - self.prev_linvel_b
-        ) / self.env.physics_dt
+        # The policy was trained with ``steps`` acceleration samples per
+        # control step.  MuJoCo can run more physics substeps than Isaac, so
+        # map the completed physics substep to one of the fixed output slots
+        # instead of indexing the smaller buffer with the raw substep.
+        sample_slot = max(
+            0,
+            ((substep + 1) * self.steps + self.decimation - 1)
+            // self.decimation - 1,
+        )
+        if sample_slot < self.steps and sample_slot > self._last_sample_slot:
+            self.lin_acc_substep[:, sample_slot] = (
+                linvel_b - self.prev_linvel_b
+            ) / self.env.physics_dt
+            self._last_sample_slot = sample_slot
         self.prev_linvel_b = linvel_b
 
     @override

@@ -15,12 +15,36 @@ from active_adaptation.envs.env_base import _EnvBase
 from active_adaptation.registry import Registry
 
 
+class _MujocoDebugDraw:
+    """Isaac-compatible no-op debug drawer for MuJoCo rollouts.
+
+    FACET command callbacks are shared by Isaac and MuJoCo and may emit
+    vectors/points every control step.  MuJoCo's passive viewer has no
+    Isaac debug-draw interface, so these calls must be harmless during
+    playback rather than aborting the environment step.
+    """
+
+    def clear(self):
+        pass
+
+    def plot(self, *args, **kwargs):
+        pass
+
+    def vector(self, *args, **kwargs):
+        pass
+
+    def point(self, *args, **kwargs):
+        pass
+
+
 class MujocoBackendEnv(_EnvBase):
     """MuJoCo backend env: only scene/sim construction."""
 
     def __init__(self, cfg, device: str, headless: bool = True):
         super().__init__(cfg, device, headless)
         self.robot = self.scene.articulations["robot"]
+        # Shared MDP debug callbacks expect this attribute on every backend.
+        self.debug_draw = _MujocoDebugDraw()
 
     def setup_scene(self):
         from active_adaptation.envs.backends.mujoco.mujoco import MJScene, MJSim

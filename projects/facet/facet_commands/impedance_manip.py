@@ -663,6 +663,10 @@ class ImpedanceCommandManager(Command):
         self._set_velocity_target(torch.arange(self.num_envs, device=self.device))
 
     def debug_draw(self):
+        # Marker objects are created only for Isaac; MuJoCo playback uses a
+        # passive viewer and skips this Isaac-only visualization path.
+        if self.env.backend != "isaac":
+            return
         self.env.debug_draw.vector(
             self.asset.data.root_link_pos_w,
             self.setpoint_w[:, :3] - self.asset.data.root_link_pos_w,

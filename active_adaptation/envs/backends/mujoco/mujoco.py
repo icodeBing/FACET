@@ -81,6 +81,17 @@ class MJArticulationData:
     def body_ang_vel_w(self):
         return self.body_com_vel_w[..., :3]
 
+    # IsaacLab-compatible names.  FACET uses ``body_pos_w``/``body_quat_w``
+    # for link-frame poses, while the MuJoCo backend stores the same values
+    # under the more explicit ``body_link_*`` names.
+    @property
+    def body_pos_w(self):
+        return self.body_link_pos_w
+
+    @property
+    def body_quat_w(self):
+        return self.body_link_quat_w
+
     @property
     def root_pos_w(self):
         return self.body_link_pos_w[..., 0, :]
@@ -112,6 +123,14 @@ class MJArticulationData:
     @property
     def root_com_ang_vel_w(self):
         return self.body_com_vel_w[:, 0, :3]
+
+    @property
+    def root_link_lin_vel_w(self):
+        return self.body_lin_vel_w[:, 0, :]
+
+    @property
+    def root_link_ang_vel_w(self):
+        return self.body_ang_vel_w[:, 0, :]
     
     @property
     def root_com_lin_vel_b(self):
@@ -123,7 +142,17 @@ class MJArticulationData:
     
     @property
     def root_state_w(self):
-        return torch.cat([self.body_link_pos_w[:, 0, :], self.body_link_quat_w[:, 0, :]], dim=-1)
+        return self.root_link_state_w
+
+    @property
+    def root_link_state_w(self):
+        """Root link position, quaternion, linear and angular velocity."""
+        return torch.cat([
+            self.root_link_pos_w,
+            self.root_link_quat_w,
+            self.root_link_lin_vel_w,
+            self.root_link_ang_vel_w,
+        ], dim=-1)
 
 
 class MJPhysicsView:

@@ -63,7 +63,10 @@ observation:
   priv:
     root_linvel_b: {yaw_only: true}
     root_angvel_b: {}
-    root_linacc_substep: {flatten: true}
+    # Keep the privileged observation contract identical across Isaac and
+    # MuJoCo.  MuJoCo may use a finer physics timestep, but the policy was
+    # trained with four acceleration samples per control step.
+    root_linacc_substep: {flatten: true, steps: 4}
     joint_torques:
       joint_names: ".*"
       scale: 100.0

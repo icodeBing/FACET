@@ -64,7 +64,7 @@ class last_contact_pos(Observation):
 
 
 class contact_indicator(Observation):
-    supported_backends = ("isaac",)
+    supported_backends = ("isaac", "mujoco")
     def __init__(self, env, body_names: str):
         super().__init__(env)
         self.asset: Articulation = self.env.scene.articulations["robot"]
