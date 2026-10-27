@@ -17,8 +17,9 @@ input:
       ".*shoulder.*": 0.0
       ".*elbow_joint": 0.0
       ".*wrist.*": 0.0
-      waist_roll_joint: 0.32
-      waist_pitch_joint: 0.28
+      waist_yaw_joint: 0.20
+      waist_roll_joint: 0.18
+      waist_pitch_joint: 0.18
 
 command:
   _target_: ImpedanceCommandManager
@@ -60,17 +61,23 @@ reward:
     # Measures torso pitch and roll directly through the body gravity vector.
     body_upright: {weight: 3.0, body_name: torso_link}
     base_height_exp: {weight: 1.5, target_height: 0.74}
-    angvel_xy_l2: {weight: 0.06, body_names: [pelvis, torso_link]}
+    angvel_xy_l2: {weight: 0.15, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.2, gamma: 0.8}
 
     # Restore the posture anchors used by the validated direct-velocity task.
     # These constrain the unlocked waist and prevent hip yaw/roll from being
     # used as a shortcut for root-reference tracking.
-    joint_deviation_l2_waist: {weight: 2.5, joint_names: [waist.*]}
+    joint_deviation_l2_waist: {weight: 4.0, joint_names: [waist.*]}
     joint_deviation_l2_waist_pitch:
       _target_: joint_deviation_l2
-      weight: 1.5
+      weight: 2.5
       joint_names: [waist_pitch_joint]
+    # Directly damp oscillation of all three waist joints. This is separate
+    # from the arm-only joint velocity regularizer below.
+    joint_vel_l2_waist:
+      _target_: joint_vel_l2
+      weight: 0.03
+      joint_names: [waist_yaw_joint, waist_roll_joint, waist_pitch_joint]
     joint_deviation_l1_legs:
       _target_: joint_deviation_l1
       weight: 0.5

@@ -671,7 +671,6 @@ class MJSim:
         self._camera.lookat[:] = np.asarray(
             camera_cfg.get("lookat", [0.0, 0.0, 0.75]), dtype=np.float64
         )
-        self._camera.fovy = float(camera_cfg.get("fovy", 45.0))
         if self.scene.viewer is not None:
             self.scene.viewer.cam.type = self._camera.type
             self.scene.viewer.cam.trackbodyid = self._camera.trackbodyid
@@ -679,7 +678,6 @@ class MJSim:
             self.scene.viewer.cam.elevation = self._camera.elevation
             self.scene.viewer.cam.distance = self._camera.distance
             self.scene.viewer.cam.lookat[:] = self._camera.lookat
-            self.scene.viewer.cam.fovy = self._camera.fovy
         # self.timer = Timer(self.get_physics_dt())
 
     def render(self):
