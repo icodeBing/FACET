@@ -25,6 +25,29 @@ FILE_PATH = Path(__file__).parent
 CONFIG_PATH = FILE_PATH.parent / "cfg"
 
 
+def update_follow_camera(env, cfg):
+    """Keep the Isaac camera centered on env 0's robot root during playback."""
+    if not bool(cfg.get("camera_follow", False)):
+        return
+    if getattr(env, "backend", None) != "isaac":
+        return
+
+    base_env = getattr(env, "base_env", env)
+    try:
+        root_pos = base_env.scene.articulations["robot"].data.root_pos_w[0]
+        offset = torch.as_tensor(cfg.camera_offset, device=root_pos.device, dtype=root_pos.dtype)
+        lookat_offset = torch.as_tensor(
+            cfg.camera_lookat_offset, device=root_pos.device, dtype=root_pos.dtype
+        )
+        eye = (root_pos + offset).detach().cpu().tolist()
+        target = (root_pos + lookat_offset).detach().cpu().tolist()
+        env.sim.set_camera_view(eye=eye, target=target)
+    except (AttributeError, KeyError, RuntimeError):
+        # Camera following is diagnostic/visualization only; it must not stop
+        # policy playback if a backend wrapper lacks root pose access.
+        return
+
+
 @VecNorm.freeze()
 def export_policy(env, policy, export_dir):
     fake_input = env.observation_spec[0].rand().cpu()
@@ -89,6 +112,8 @@ def main(cfg: DictConfig):
                 carry = rollout_policy(carry)
                 td, carry = env.step_and_maybe_reset(carry)
                 episode_stats.add(td)
+
+                update_follow_camera(env, cfg)
 
                 if record_enabled:
                     rec.add_frame()

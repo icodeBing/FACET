@@ -11,6 +11,12 @@ record_video: false
 # Number of policy control steps to record; <=0 means run until Ctrl+C.
 record_steps: 0
 
+# Isaac camera following for headless recordings.  The offsets are expressed
+# in world coordinates relative to the robot root (env 0).
+camera_follow: false
+camera_offset: [0.0, -4.0, 1.5]
+camera_lookat_offset: [0.0, 0.0, 0.8]
+
 # MuJoCo camera.  The tracking camera follows body id 1 (the robot root).
 # azimuth/elevation are degrees; distance/lookat are meters; fovy is degrees.
 camera:
