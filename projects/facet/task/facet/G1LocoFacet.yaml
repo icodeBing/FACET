@@ -21,6 +21,12 @@ input:
       waist_roll_joint: 0.18
       waist_pitch_joint: 0.18
 
+# Keep the phase supplied to the actor identical to the phase used by every
+# gait reward below. A mismatch makes the contact target effectively hidden.
+observation:
+  policy:
+    gait_phase: {period: 1.0}
+
 command:
   _target_: ImpedanceCommandManager
   virtual_mass_range: [2., 4., 8.]
@@ -32,7 +38,9 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  linvel_x_range: [0.6, 0.6]
+  # Start with a conservative walking speed while the alternating gait
+  # stabilizes. Increase to 0.6-0.9 only after the feet show clean cycles.
+  linvel_x_range: [0.35, 0.35]
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   stand_prob: 0.0
@@ -41,7 +49,9 @@ command:
   randomize_gait_phase: true
   # Short pelvis impulses are part of this experiment.  The impulse is applied
   # both to the physical pelvis and to the FACET reference dynamics.
-  disturbance_prob: 0.003
+  # Disturbance robustness is added after nominal walking is stable. External
+  # impulses during this phase make the policy learn survival before gait.
+  disturbance_prob: 0.0
   disturbance_force_x_range: [80., 200.]
   disturbance_force_y_range: [80., 200.]
   disturbance_force_z_range: [0., 20.]
@@ -55,7 +65,7 @@ reward:
     impedance_pos: {weight: 0.75}
     # The previous run kept walking but retained roughly 0.29 m/s FACET
     # velocity error. Increase tracking pressure without changing the command.
-    impedance_vel: {weight: 2.0}
+    impedance_vel: {weight: 1.25}
     impedance_yaw_pos: {weight: 0.75}
     impedance_yaw_vel: {weight: 1.5}
     # Measures torso pitch and roll directly through the body gravity vector.
@@ -83,8 +93,8 @@ reward:
       weight: 0.5
       joint_names: [.*hip_roll_joint, .*hip_yaw_joint]
 
-    # Phase-aware G1 gait shaping supplements, but does not replace, FACET
-    # reference tracking. All phase terms share the policy's 0.8 s gait clock.
+  # Phase-aware G1 gait shaping supplements, but does not replace, FACET
+  # reference tracking. All phase terms share the policy's 1.0 s gait clock.
     feet_clearance:
       weight: 1.0
       feet_names: ".*_ankle_roll_link"
@@ -99,72 +109,72 @@ reward:
       target_pitch: 0.0
       pitch_sigma: 0.12
     biped_swing_height:
-      weight: 1.0
+      weight: 1.5
       body_names: ".*_ankle_roll_link"
-      period: 0.8
-      stance_ratio: 0.55
+      period: 1.0
+      stance_ratio: 0.60
       nominal_height: 0.025
-      clearance: 0.09
-      height_sigma: 0.03
+      clearance: 0.07
+      height_sigma: 0.045
     biped_swing_knee_flexion:
-      weight: 1.0
+      weight: 1.5
       joint_names: ["left_knee_joint", "right_knee_joint"]
-      period: 0.8
-      stance_ratio: 0.55
-      target_flexion: 0.62
-      flexion_sigma: 0.16
+      period: 1.0
+      stance_ratio: 0.60
+      target_flexion: 0.48
+      flexion_sigma: 0.20
     biped_knee_phase_symmetry:
-      weight: 0.7
+      weight: 1.2
       joint_names: ["left_knee_joint", "right_knee_joint"]
-      period: 0.8
-      stance_ratio: 0.55
-      target_flexion: 0.62
-      sigma: 0.18
+      period: 1.0
+      stance_ratio: 0.60
+      target_flexion: 0.48
+      sigma: 0.22
     biped_swing_forward:
       weight: 0.65
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 0.8
-      stance_ratio: 0.55
-      # Conservative step targets while recovering a compact straight gait.
-      step_length_scale: 0.6
+      period: 1.0
+      stance_ratio: 0.60
+      # At 0.35 m/s this produces a short, recoverable step.
+      step_length_scale: 0.55
       min_step_length: 0.08
       max_step_length: 0.30
-      velocity_sigma: 0.35
+      velocity_sigma: 0.28
     biped_swing_foot_placement:
-      weight: 0.75
-      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 0.8
-      stance_ratio: 0.55
-      step_length_scale: 0.6
-      min_step_length: 0.08
-      max_step_length: 0.30
-      position_sigma: 0.08
-    biped_stride_limit:
       weight: 1.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      max_separation: 0.30
+      period: 1.0
+      stance_ratio: 0.60
+      step_length_scale: 0.55
+      min_step_length: 0.06
+      max_step_length: 0.24
+      position_sigma: 0.10
+    biped_stride_limit:
+      weight: 1.2
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      max_separation: 0.26
       scale: 0.08
     biped_stance_foot_velocity:
-      weight: 0.05
+      weight: 0.15
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 0.8
-      stance_ratio: 0.55
-      speed_scale: 0.5
+      period: 1.0
+      stance_ratio: 0.60
+      speed_scale: 0.35
     feet_lateral_separation:
       # Keep the anti-crossing guard without suppressing normal swing.
-      weight: 0.7
+      weight: 1.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
       min_separation: 0.1
       min_knee_separation: 0.06
       order_scale: 0.16
-      max_separation: 0.28
-      scale: 0.08
+      max_separation: 0.26
+      scale: 0.06
     biped_alternating_contact:
-      weight: 0.75
+      weight: 1.2
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 0.8
-      threshold: 0.55
+      period: 1.0
+      threshold: 0.60
 
     # Per-foot and root telemetry. These terms are computed and logged but do
     # not enter the optimization objective.
