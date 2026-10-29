@@ -410,7 +410,7 @@ class ImpedanceCommandManager(Command):
     @property
     def command_hidden(self):
         result = [
-            self.w2b(self.pos_base.pos_w[:, self.ref_steps] - self.asset.data.root_link_pos_w.unsqueeze(1)).reshape(self.num_envs, -1),
+            self.w2b(self.pos_base.pos_w[:, self.ref_steps] - self.asset.data.root_com_pos_w.unsqueeze(1)).reshape(self.num_envs, -1),
             self.w2b(self.pos_base.vel_w[:, self.ref_steps]).reshape(self.num_envs, -1),
             wrap_to_pi(self.rot_base.pos_w[:, self.ref_steps] - self.root_link_rpy_w.unsqueeze(1)).reshape(self.num_envs, -1),
             self.w2b(self.rot_base.vel_w[:, self.ref_steps]).reshape(self.num_envs, -1),
@@ -465,10 +465,13 @@ class ImpedanceCommandManager(Command):
             ).float() * 0.5
         else:
             self.gait_phase_offset[env_ids] = 0.0
-        root_link_pos = self.asset.data.root_link_pos_w[env_ids]
+        # FACET translation dynamics are defined on the robot CoM.  Keep the
+        # root-link orientation as the body frame, but use CoM position and
+        # velocity consistently for the reference trajectory.
+        root_link_pos = self.asset.data.root_com_pos_w[env_ids]
         root_link_rpy = euler_from_quat(self.asset.data.root_link_quat_w[env_ids])
         self.pos_base.pos_w[env_ids] = root_link_pos.unsqueeze(1)
-        self.pos_base.vel_w[env_ids] = self.asset.data.root_link_lin_vel_w[env_ids].unsqueeze(1)
+        self.pos_base.vel_w[env_ids] = self.asset.data.root_com_lin_vel_w[env_ids].unsqueeze(1)
         self.rot_base.pos_w[env_ids] = root_link_rpy.unsqueeze(1)
         self.rot_base.vel_w[env_ids] = self.asset.data.root_link_ang_vel_w[env_ids].unsqueeze(1)
         self.root_link_rpy_w[env_ids] = root_link_rpy
@@ -486,7 +489,7 @@ class ImpedanceCommandManager(Command):
             dim=[self.num_envs],
             inputs=[
                 wp.from_torch(mask, dtype=wp.bool, return_ctype=True),
-                wp.from_torch(self.asset.data.root_link_pos_w, dtype=wp.vec3, return_ctype=True),
+                wp.from_torch(self.asset.data.root_com_pos_w, dtype=wp.vec3, return_ctype=True),
                 wp.from_torch(self.root_link_rpy_w, dtype=wp.vec3, return_ctype=True),
                 self.seed,
                 wp.from_torch(self.virtual_mass_range, dtype=wp.float32, return_ctype=True),
@@ -508,7 +511,7 @@ class ImpedanceCommandManager(Command):
     def update(self):
         self.seed = wp.rand_init(self.seed)
         mask = self.env.episode_length_buf % 100 == 0
-        root_link_pos = self.asset.data.root_link_pos_w
+        root_link_pos = self.asset.data.root_com_pos_w
         self.root_link_rpy_w = euler_from_quat(self.asset.data.root_link_quat_w)
         wp.launch(
             sample_command_world,
@@ -566,8 +569,8 @@ class ImpedanceCommandManager(Command):
             )
 
         self.pos_base = self.pos_base.roll(1, 1)
-        self.pos_base.pos_w[:, 0] = self.asset.data.root_link_pos_w
-        self.pos_base.vel_w[:, 0] = self.asset.data.root_link_lin_vel_w
+        self.pos_base.pos_w[:, 0] = self.asset.data.root_com_pos_w
+        self.pos_base.vel_w[:, 0] = self.asset.data.root_com_lin_vel_w
 
         self.rot_base = self.rot_base.roll(1, 1)
         self.rot_base.pos_w[:, 0] = self.root_link_rpy_w
@@ -605,7 +608,7 @@ class ImpedanceCommandManager(Command):
 
         self.setpoint_b[:, :3] = quat_rotate_inverse(
             self.asset.data.root_quat_w,
-            self.setpoint_w[:, :3] - self.asset.data.root_link_pos_w
+            self.setpoint_w[:, :3] - self.asset.data.root_com_pos_w
         )
         self.setpoint_b[:, 3:] = wrap_to_pi(self.setpoint_w[:, 3:] - self.root_link_rpy_w)
 
@@ -640,11 +643,11 @@ class ImpedanceCommandManager(Command):
         ang_kp = self.cmd.kp_base[env_ids, 1:2]
         ang_kd = self.cmd.kd_base[env_ids, 1:2]
         self.setpoint_w[env_ids, :3] = (
-            self.asset.data.root_link_pos_w[env_ids]
+            self.asset.data.root_com_pos_w[env_ids]
             + self.cmd_linvel_w[env_ids] * (lin_kd / lin_kp.clamp_min(1e-6))
         )
         self.setpoint_w[env_ids, 3:6] = self.root_link_rpy_w[env_ids]
-        self.setpoint_w[env_ids, 2] = self.asset.data.root_link_pos_w[env_ids, 2]
+        self.setpoint_w[env_ids, 2] = self.asset.data.root_com_pos_w[env_ids, 2]
         self.setpoint_w[env_ids, 5] += self.cmd_yawvel_b[env_ids, 0] * (
             ang_kd[:, 0] / ang_kp[:, 0].clamp_min(1e-6)
         )
@@ -668,13 +671,13 @@ class ImpedanceCommandManager(Command):
         if self.env.backend != "isaac":
             return
         self.env.debug_draw.vector(
-            self.asset.data.root_link_pos_w,
-            self.setpoint_w[:, :3] - self.asset.data.root_link_pos_w,
+            self.asset.data.root_com_pos_w,
+            self.setpoint_w[:, :3] - self.asset.data.root_com_pos_w,
             color=(1.0, 0.0, 0.0, 1.0),
             size=5.0,
         )
         self.env.debug_draw.vector( # reference lin vel, green
-            self.asset.data.root_link_pos_w,
+            self.asset.data.root_com_pos_w,
             self.pos_base.vel_w[:, -2],
             color=(0.0, 1.0, 0.0, 1.0),
             size=5.0,
@@ -706,7 +709,7 @@ class ImpedanceCommandManager(Command):
             )
         # external forces
         self.env.debug_draw.vector(
-            self.asset.data.root_link_pos_w,
+            self.asset.data.root_com_pos_w,
             self.force_impulse.get_force(None, None) / 9.81,
             color=(1.0, 0.6, 0.0, 1.0), # orange
             size=3.0,

@@ -41,27 +41,141 @@ class facet_external_force_component(Reward[ImpedanceCommandManager]):
 
 
 class facet_pelvis_ref_pos_error(Reward[ImpedanceCommandManager]):
-    """Diagnostic only: xy distance between real pelvis and FACET reference."""
+    """Diagnostic only: xy distance between the real CoM and FACET reference."""
     def __init__(self, env, weight: float = 1.0, enabled: bool = False):
         super().__init__(env, weight, enabled)
         self.asset = self.command_manager.asset
 
     def _compute(self) -> torch.Tensor:
         target = self.command_manager.surr_pos_target[:, 0, :2]
-        current = self.asset.data.root_link_pos_w[:, :2]
+        current = self.asset.data.root_com_pos_w[:, :2]
         return (target - current).norm(dim=-1, keepdim=True)
 
 
 class facet_pelvis_ref_vel_error(Reward[ImpedanceCommandManager]):
-    """Diagnostic only: xy velocity tracking error to the FACET reference."""
+    """Diagnostic only: xy CoM velocity tracking error to the FACET reference."""
     def __init__(self, env, weight: float = 1.0, enabled: bool = False):
         super().__init__(env, weight, enabled)
         self.asset = self.command_manager.asset
 
     def _compute(self) -> torch.Tensor:
         target = self.command_manager.surr_lin_vel_target[:, 0, :2]
-        current = self.asset.data.root_link_lin_vel_w[:, :2]
+        current = self.asset.data.root_com_lin_vel_w[:, :2]
         return (target - current).norm(dim=-1, keepdim=True)
+
+
+class facet_track_lin_vel(Reward[ImpedanceCommandManager]):
+    """Nominal walking anchor: track the commanded CoM velocity without force.
+
+    FACET's primary objective remains reference-model tracking.  This small
+    auxiliary term is active only when no external impulse is present, so it
+    prevents a stationary solution during nominal gait learning without
+    making the policy reject the compliant response during a disturbance.
+    """
+
+    def __init__(self, env, weight: float, sigma: float = 0.25):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.sigma = float(sigma)
+
+    def _compute(self) -> torch.Tensor:
+        command = self.command_manager.cmd_linvel_w[:, :2]
+        current = self.asset.data.root_com_lin_vel_w[:, :2]
+        error_l2 = (current - command).square().sum(dim=-1, keepdim=True)
+        reward = torch.exp(-error_l2 / self.sigma)
+        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+        active = (~self.command_manager.is_standing_env) & (~force_active)
+        return reward, active
+
+
+class facet_command_linvel_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: commanded forward velocity in the world frame (m/s)."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+
+    def _compute(self):
+        return self.command_manager.cmd_linvel_w[:, 0:1]
+
+
+class facet_reference_linvel_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: mean forward velocity of the smoothed FACET targets."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+
+    def _compute(self):
+        return self.command_manager.surr_lin_vel_target[:, :, 0].mean(
+            dim=1, keepdim=True
+        )
+
+
+class facet_actual_com_linvel_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: actual CoM forward velocity in the world frame (m/s)."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.root_com_lin_vel_w[:, 0:1]
+
+
+class facet_command_reference_vel_error(Reward[ImpedanceCommandManager]):
+    """Diagnostic: commanded velocity versus the smoothed reference target."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_w[:, :2].unsqueeze(1)
+        target = self.command_manager.surr_lin_vel_target[:, :, :2]
+        return (target - command).norm(dim=-1).mean(dim=1, keepdim=True)
+
+
+class facet_command_actual_vel_error(Reward[ImpedanceCommandManager]):
+    """Diagnostic: commanded velocity versus actual CoM velocity."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_w[:, :2]
+        current = self.asset.data.root_com_lin_vel_w[:, :2]
+        return (current - command).norm(dim=-1, keepdim=True)
+
+
+class facet_root_link_com_vel_delta(Reward[ImpedanceCommandManager]):
+    """Diagnostic: root-link versus CoM velocity discrepancy."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        delta = (
+            self.asset.data.root_link_lin_vel_w[:, :2]
+            - self.asset.data.root_com_lin_vel_w[:, :2]
+        )
+        return delta.norm(dim=-1, keepdim=True)
+
+
+class facet_root_link_com_pos_delta(Reward[ImpedanceCommandManager]):
+    """Diagnostic: root-link versus CoM position discrepancy in xy (m)."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        delta = (
+            self.asset.data.root_link_pos_w[:, :2]
+            - self.asset.data.root_com_pos_w[:, :2]
+        )
+        return delta.norm(dim=-1, keepdim=True)
 
 
 class facet_pelvis_pitch_roll_abs(Reward[ImpedanceCommandManager]):
@@ -214,7 +328,7 @@ class facet_root_y_position(Reward):
         self.asset = env.command_manager.asset
 
     def _compute(self):
-        return self.asset.data.root_link_pos_w[:, 1:2]
+        return self.asset.data.root_com_pos_w[:, 1:2]
 
 
 class facet_root_yaw(Reward):
@@ -242,7 +356,7 @@ class impedance_pos(Reward[ImpedanceCommandManager]):
 
     def _compute(self) -> torch.Tensor:
         target_pos_xy = self.command_manager.surr_pos_target[:, :, :2]
-        current_pos_xy = self.asset.data.root_link_pos_w[:, :2].unsqueeze(1)
+        current_pos_xy = self.asset.data.root_com_pos_w[:, :2].unsqueeze(1)
         diff = target_pos_xy - current_pos_xy
         error_l2 = diff.square().sum(dim=-1, keepdim=True)
         r = (- error_l2 / 0.25).exp().mean(1)
@@ -271,7 +385,7 @@ class impedance_vel(Reward[ImpedanceCommandManager]):
 
     def _compute(self) -> torch.Tensor:
         target_vel_xy = self.command_manager.surr_lin_vel_target[:, :, :2]
-        diff = target_vel_xy - self.asset.data.root_link_lin_vel_w[:, :2].unsqueeze(1)
+        diff = target_vel_xy - self.asset.data.root_com_lin_vel_w[:, :2].unsqueeze(1)
         error_l2 = diff.square().sum(dim=-1, keepdim=True)
         r = ((- error_l2 / 0.25).exp() - 0.25 * error_l2).mean(1)
         return r.reshape(self.num_envs, 1)

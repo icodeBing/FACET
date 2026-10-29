@@ -74,6 +74,9 @@ reward:
     # The previous run kept walking but retained roughly 0.29 m/s FACET
     # velocity error. Increase tracking pressure without changing the command.
     impedance_vel: {weight: 1.25}
+    # Nominal walking anchor. It is disabled automatically while an external
+    # impulse is active, preserving FACET's compliant response during tests.
+    facet_track_lin_vel: {weight: 0.50, sigma: 0.25}
     impedance_yaw_pos: {weight: 0.75}
     impedance_yaw_vel: {weight: 1.5}
     # Measures torso pitch and roll directly through the body gravity vector.
@@ -116,15 +119,14 @@ reward:
       body_name: torso_link
       target_pitch: 0.0
       pitch_sigma: 0.12
-    # Official Unitree foot-clearance objective: target a 10 cm swing height
-    # with a velocity gate. This is less prescriptive than the old sinusoidal
-    # phase target and lets the policy discover its own leg trajectory.
+    # Kept available for comparison, but excluded from training: the current
+    # velocity gate gives near-static feet almost full reward.
     max_feet_height:
-      weight: 1.0
+      weight: 0.0
       body_names: ".*_ankle_roll_link"
       target_height: 0.10
     biped_swing_height:
-      weight: 0.0
+      weight: 0.50
       body_names: ".*_ankle_roll_link"
       period: 0.8
       stance_ratio: 0.55
@@ -132,24 +134,23 @@ reward:
       clearance: 0.07
       height_sigma: 0.045
     biped_swing_knee_flexion:
-      weight: 0.0
+      weight: 0.35
       joint_names: ["left_knee_joint", "right_knee_joint"]
       period: 0.8
       stance_ratio: 0.55
       target_flexion: 0.48
       flexion_sigma: 0.20
     biped_knee_phase_symmetry:
-      weight: 0.0
+      weight: 0.15
       joint_names: ["left_knee_joint", "right_knee_joint"]
       period: 0.8
       stance_ratio: 0.55
       target_flexion: 0.48
       sigma: 0.22
-    # Disabled: its phase-velocity formula demands an unrealistically high
-    # foot speed (about 1.4 m/s at the previous settings) and suppresses
-    # otherwise valid low-speed walking.
+    # Low-weight forward swing shaping provides a dense step signal while
+    # limiting the requested stride to the commanded walking speed.
     biped_swing_forward:
-      weight: 0.0
+      weight: 0.25
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -159,7 +160,7 @@ reward:
       max_step_length: 0.30
       velocity_sigma: 0.28
     biped_swing_foot_placement:
-      weight: 0.0
+      weight: 0.35
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -173,7 +174,7 @@ reward:
       max_separation: 0.30
       scale: 0.08
     biped_stance_foot_velocity:
-      weight: 0.0
+      weight: 0.25
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -189,7 +190,7 @@ reward:
       max_separation: 0.30
       scale: 0.08
     biped_alternating_contact:
-      weight: 0.5
+      weight: 1.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       threshold: 0.55
@@ -219,6 +220,14 @@ reward:
     facet_root_y_position: {weight: 1.0, enabled: false}
     facet_root_yaw: {weight: 1.0, enabled: false}
     facet_root_yaw_rate: {weight: 1.0, enabled: false}
+    # Velocity-chain diagnostics. These are logged but do not affect PPO.
+    facet_command_linvel_x: {weight: 1.0, enabled: false}
+    facet_reference_linvel_x: {weight: 1.0, enabled: false}
+    facet_actual_com_linvel_x: {weight: 1.0, enabled: false}
+    facet_command_reference_vel_error: {weight: 1.0, enabled: false}
+    facet_command_actual_vel_error: {weight: 1.0, enabled: false}
+    facet_root_link_com_vel_delta: {weight: 1.0, enabled: false}
+    facet_root_link_com_pos_delta: {weight: 1.0, enabled: false}
 
     # Keep arms and wrists near their default pose; no phase-driven arm motion.
     joint_pos_default:
