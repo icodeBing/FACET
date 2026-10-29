@@ -376,10 +376,10 @@ class biped_alternating_contact(Reward):
         _, is_stance, _ = _biped_gait_phase(
             self.env, self.period, self.threshold
         )
-        # Score both feet independently.  Summing lets one foot compensate for
-        # a permanently dragged foot; the minimum keeps the alternating target
-        # meaningful for both legs while retaining the original [0, 2] scale.
-        reward = (is_stance == contact).float().mul(2.0).amin(dim=1, keepdim=True)
+        # Match Unitree's released feet_gait term: score each foot separately
+        # and retain a dense signal when only one foot is in the correct phase.
+        # The result remains in the original [0, 2] range.
+        reward = (is_stance == contact).float().sum(dim=1, keepdim=True)
         active = ~self.command_manager.is_standing_env
         return reward, active.reshape(self.num_envs, 1)
 

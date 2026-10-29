@@ -11,21 +11,29 @@ name: G1LocoFacet
 input:
   action:
     action_scaling:
+      # Match Unitree's released G1-29DoF velocity task. The previous
+      # FACET-specific leg scales were 1.4-2.2x larger and caused aggressive
+      # cross-body foot placement during early gait learning.
+      .*hip_pitch.*: 0.25
+      .*hip_roll.*: 0.25
+      .*hip_yaw.*: 0.25
+      .*knee.*: 0.25
+      .*ankle.*: 0.25
       # The experiment isolates pelvis FACET compliance from arm strategies.
       # Zero scaling makes JointPosition command the asset default pose for
       # these joints while preserving the policy/action tensor interface.
       ".*shoulder.*": 0.0
       ".*elbow_joint": 0.0
       ".*wrist.*": 0.0
-      waist_yaw_joint: 0.20
-      waist_roll_joint: 0.18
-      waist_pitch_joint: 0.18
+      waist_yaw_joint: 0.25
+      waist_roll_joint: 0.25
+      waist_pitch_joint: 0.25
 
 # Keep the phase supplied to the actor identical to the phase used by every
 # gait reward below. A mismatch makes the contact target effectively hidden.
 observation:
   policy:
-    gait_phase: {period: 1.0}
+    gait_phase: {period: 0.8}
 
 command:
   _target_: ImpedanceCommandManager
@@ -38,15 +46,15 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  # Start with a conservative walking speed while the alternating gait
+  # Start with a conservative walking speed while the official-style gait
   # stabilizes. Increase to 0.6-0.9 only after the feet show clean cycles.
   linvel_x_range: [0.35, 0.35]
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   stand_prob: 0.0
-  # Train both left-first and right-first episodes to prevent a fixed
-  # phase-dependent single-leg solution.
-  randomize_gait_phase: true
+  # The released Unitree gait reward uses a fixed episode phase. Keep the
+  # target observable and avoid adding a second source of phase variation.
+  randomize_gait_phase: false
   # Short pelvis impulses are part of this experiment.  The impulse is applied
   # both to the physical pelvis and to the FACET reference dynamics.
   # Disturbance robustness is added after nominal walking is stable. External
@@ -93,8 +101,8 @@ reward:
       weight: 0.5
       joint_names: [.*hip_roll_joint, .*hip_yaw_joint]
 
-  # Phase-aware G1 gait shaping supplements, but does not replace, FACET
-  # reference tracking. All phase terms share the policy's 1.0 s gait clock.
+    # Unitree-style phase-aware gait shaping supplements FACET reference
+    # tracking. The observable phase and contact target both use 0.8 s.
     feet_clearance:
       weight: 1.0
       feet_names: ".*_ankle_roll_link"
@@ -108,73 +116,83 @@ reward:
       body_name: torso_link
       target_pitch: 0.0
       pitch_sigma: 0.12
-    biped_swing_height:
-      weight: 1.5
+    # Official Unitree foot-clearance objective: target a 10 cm swing height
+    # with a velocity gate. This is less prescriptive than the old sinusoidal
+    # phase target and lets the policy discover its own leg trajectory.
+    max_feet_height:
+      weight: 1.0
       body_names: ".*_ankle_roll_link"
-      period: 1.0
-      stance_ratio: 0.60
+      target_height: 0.10
+    biped_swing_height:
+      weight: 0.0
+      body_names: ".*_ankle_roll_link"
+      period: 0.8
+      stance_ratio: 0.55
       nominal_height: 0.025
       clearance: 0.07
       height_sigma: 0.045
     biped_swing_knee_flexion:
-      weight: 1.5
+      weight: 0.0
       joint_names: ["left_knee_joint", "right_knee_joint"]
-      period: 1.0
-      stance_ratio: 0.60
+      period: 0.8
+      stance_ratio: 0.55
       target_flexion: 0.48
       flexion_sigma: 0.20
     biped_knee_phase_symmetry:
-      weight: 1.2
+      weight: 0.0
       joint_names: ["left_knee_joint", "right_knee_joint"]
-      period: 1.0
-      stance_ratio: 0.60
+      period: 0.8
+      stance_ratio: 0.55
       target_flexion: 0.48
       sigma: 0.22
+    # Disabled: its phase-velocity formula demands an unrealistically high
+    # foot speed (about 1.4 m/s at the previous settings) and suppresses
+    # otherwise valid low-speed walking.
     biped_swing_forward:
-      weight: 0.65
+      weight: 0.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 1.0
-      stance_ratio: 0.60
+      period: 0.8
+      stance_ratio: 0.55
       # At 0.35 m/s this produces a short, recoverable step.
       step_length_scale: 0.55
       min_step_length: 0.08
       max_step_length: 0.30
       velocity_sigma: 0.28
     biped_swing_foot_placement:
-      weight: 1.0
+      weight: 0.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 1.0
-      stance_ratio: 0.60
+      period: 0.8
+      stance_ratio: 0.55
       step_length_scale: 0.55
       min_step_length: 0.06
       max_step_length: 0.24
       position_sigma: 0.10
     biped_stride_limit:
-      weight: 1.2
+      weight: 0.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      max_separation: 0.26
+      max_separation: 0.30
       scale: 0.08
     biped_stance_foot_velocity:
-      weight: 0.15
+      weight: 0.0
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 1.0
-      stance_ratio: 0.60
+      period: 0.8
+      stance_ratio: 0.55
       speed_scale: 0.35
     feet_lateral_separation:
       # Keep the anti-crossing guard without suppressing normal swing.
-      weight: 1.0
+      weight: 0.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
       min_separation: 0.1
       min_knee_separation: 0.06
       order_scale: 0.16
-      max_separation: 0.26
-      scale: 0.06
+      max_separation: 0.30
+      scale: 0.08
     biped_alternating_contact:
-      weight: 1.2
+      weight: 0.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      period: 1.0
-      threshold: 0.60
+      period: 0.8
+      threshold: 0.55
 
     # Per-foot and root telemetry. These terms are computed and logged but do
     # not enter the optimization objective.
