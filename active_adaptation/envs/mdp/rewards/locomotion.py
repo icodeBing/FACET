@@ -376,10 +376,18 @@ class biped_alternating_contact(Reward):
         _, is_stance, _ = _biped_gait_phase(
             self.env, self.period, self.threshold
         )
-        # Match Unitree's released feet_gait term: score each foot separately
-        # and retain a dense signal when only one foot is in the correct phase.
-        # The result remains in the original [0, 2] range.
-        reward = (is_stance == contact).float().sum(dim=1, keepdim=True)
+        # Score each foot separately, but distinguish the two failure modes
+        # that previously had the same score as a valid alternating gait:
+        # dropping the scheduled stance foot and keeping the swing foot down.
+        # A valid pattern scores 2, while either missing support or double
+        # support is reduced to 0.5. This removes the stationary double-contact
+        # local optimum without requiring strict single-support at every step.
+        stance_miss = (is_stance & ~contact).float()
+        swing_contact = ((~is_stance) & contact).float()
+        reward = (
+            (is_stance == contact).float()
+            - 0.5 * (stance_miss + swing_contact)
+        ).sum(dim=1, keepdim=True)
         active = ~self.command_manager.is_standing_env
         return reward, active.reshape(self.num_envs, 1)
 

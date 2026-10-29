@@ -11,14 +11,13 @@ name: G1LocoFacet
 input:
   action:
     action_scaling:
-      # Match Unitree's released G1-29DoF velocity task. The previous
-      # FACET-specific leg scales were 1.4-2.2x larger and caused aggressive
-      # cross-body foot placement during early gait learning.
-      .*hip_pitch.*: 0.25
-      .*hip_roll.*: 0.25
-      .*hip_yaw.*: 0.25
-      .*knee.*: 0.25
-      .*ankle.*: 0.25
+      # Use the released G1-29DoF locomotion scales so the policy has enough
+      # joint authority to lift the swing leg and produce a real stride.
+      .*hip_pitch.*: 0.548
+      .*hip_roll.*: 0.351
+      .*hip_yaw.*: 0.548
+      .*knee.*: 0.351
+      .*ankle.*: 0.439
       # The experiment isolates pelvis FACET compliance from arm strategies.
       # Zero scaling makes JointPosition command the asset default pose for
       # these joints while preserving the policy/action tensor interface.
@@ -76,7 +75,7 @@ reward:
     impedance_vel: {weight: 1.25}
     # Nominal walking anchor. It is disabled automatically while an external
     # impulse is active, preserving FACET's compliant response during tests.
-    facet_track_lin_vel: {weight: 0.50, sigma: 0.25}
+    facet_track_lin_vel: {weight: 0.75, sigma: 0.25}
     impedance_yaw_pos: {weight: 0.75}
     impedance_yaw_vel: {weight: 1.5}
     # Measures torso pitch and roll directly through the body gravity vector.
@@ -126,7 +125,7 @@ reward:
       body_names: ".*_ankle_roll_link"
       target_height: 0.10
     biped_swing_height:
-      weight: 0.50
+      weight: 0.80
       body_names: ".*_ankle_roll_link"
       period: 0.8
       stance_ratio: 0.55
@@ -134,14 +133,14 @@ reward:
       clearance: 0.07
       height_sigma: 0.045
     biped_swing_knee_flexion:
-      weight: 0.35
+      weight: 0.60
       joint_names: ["left_knee_joint", "right_knee_joint"]
       period: 0.8
       stance_ratio: 0.55
       target_flexion: 0.48
       flexion_sigma: 0.20
     biped_knee_phase_symmetry:
-      weight: 0.15
+      weight: 0.25
       joint_names: ["left_knee_joint", "right_knee_joint"]
       period: 0.8
       stance_ratio: 0.55
@@ -150,7 +149,7 @@ reward:
     # Low-weight forward swing shaping provides a dense step signal while
     # limiting the requested stride to the commanded walking speed.
     biped_swing_forward:
-      weight: 0.25
+      weight: 0.50
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -160,7 +159,7 @@ reward:
       max_step_length: 0.30
       velocity_sigma: 0.28
     biped_swing_foot_placement:
-      weight: 0.35
+      weight: 0.50
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -174,7 +173,7 @@ reward:
       max_separation: 0.30
       scale: 0.08
     biped_stance_foot_velocity:
-      weight: 0.25
+      weight: 0.35
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -224,8 +223,18 @@ reward:
     facet_command_linvel_x: {weight: 1.0, enabled: false}
     facet_reference_linvel_x: {weight: 1.0, enabled: false}
     facet_actual_com_linvel_x: {weight: 1.0, enabled: false}
+    facet_command_linvel_b_x: {weight: 1.0, enabled: false}
+    facet_command_linvel_b_y: {weight: 1.0, enabled: false}
+    facet_reference_linvel_b_x: {weight: 1.0, enabled: false}
+    facet_reference_linvel_b_y: {weight: 1.0, enabled: false}
+    facet_actual_com_linvel_b_x: {weight: 1.0, enabled: false}
+    facet_actual_com_linvel_b_y: {weight: 1.0, enabled: false}
+    facet_command_speed: {weight: 1.0, enabled: false}
+    facet_actual_com_speed: {weight: 1.0, enabled: false}
     facet_command_reference_vel_error: {weight: 1.0, enabled: false}
     facet_command_actual_vel_error: {weight: 1.0, enabled: false}
+    facet_command_reference_vel_b_error: {weight: 1.0, enabled: false}
+    facet_command_actual_vel_b_error: {weight: 1.0, enabled: false}
     facet_root_link_com_vel_delta: {weight: 1.0, enabled: false}
     facet_root_link_com_pos_delta: {weight: 1.0, enabled: false}
 

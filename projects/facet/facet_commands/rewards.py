@@ -2,8 +2,12 @@ import torch
 import einops
 
 from active_adaptation.envs.mdp.rewards.base import Reward
-from active_adaptation.utils.math import wrap_to_pi
-from active_adaptation.utils.math import euler_from_quat
+from active_adaptation.utils.math import (
+    wrap_to_pi,
+    euler_from_quat,
+    quat_rotate_inverse,
+    yaw_quat,
+)
 from .impedance_manip import ImpedanceCommandManager
 
 
@@ -145,6 +149,125 @@ class facet_command_actual_vel_error(Reward[ImpedanceCommandManager]):
     def _compute(self):
         command = self.command_manager.cmd_linvel_w[:, :2]
         current = self.asset.data.root_com_lin_vel_w[:, :2]
+        return (current - command).norm(dim=-1, keepdim=True)
+
+
+def _reference_linvel_b(command_manager: ImpedanceCommandManager, asset):
+    """Convert the world-frame FACET velocity preview to the yaw body frame."""
+    yaw = yaw_quat(asset.data.root_link_quat_w).unsqueeze(1)
+    return quat_rotate_inverse(yaw, command_manager.surr_lin_vel_target)
+
+
+class facet_command_linvel_b_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: commanded forward velocity in the robot yaw frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+
+    def _compute(self):
+        return self.command_manager.cmd_linvel_b[:, 0:1]
+
+
+class facet_command_linvel_b_y(Reward[ImpedanceCommandManager]):
+    """Diagnostic: commanded lateral velocity in the robot yaw frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+
+    def _compute(self):
+        return self.command_manager.cmd_linvel_b[:, 1:2]
+
+
+class facet_reference_linvel_b_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: mean FACET preview forward velocity in the yaw frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        target_b = _reference_linvel_b(self.command_manager, self.asset)
+        return target_b[:, :, 0].mean(dim=1, keepdim=True)
+
+
+class facet_reference_linvel_b_y(Reward[ImpedanceCommandManager]):
+    """Diagnostic: mean FACET preview lateral velocity in the yaw frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        target_b = _reference_linvel_b(self.command_manager, self.asset)
+        return target_b[:, :, 1].mean(dim=1, keepdim=True)
+
+
+class facet_actual_com_linvel_b_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: actual CoM forward velocity in the robot body frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.root_com_lin_vel_b[:, 0:1]
+
+
+class facet_actual_com_linvel_b_y(Reward[ImpedanceCommandManager]):
+    """Diagnostic: actual CoM lateral velocity in the robot body frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.root_com_lin_vel_b[:, 1:2]
+
+
+class facet_command_speed(Reward[ImpedanceCommandManager]):
+    """Diagnostic: commanded horizontal CoM speed."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+
+    def _compute(self):
+        return self.command_manager.cmd_linvel_b[:, :2].norm(dim=-1, keepdim=True)
+
+
+class facet_actual_com_speed(Reward[ImpedanceCommandManager]):
+    """Diagnostic: actual horizontal CoM speed in the body frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        return self.asset.data.root_com_lin_vel_b[:, :2].norm(dim=-1, keepdim=True)
+
+
+class facet_command_reference_vel_b_error(Reward[ImpedanceCommandManager]):
+    """Diagnostic: command-to-reference velocity error in yaw body frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_b[:, :2].unsqueeze(1)
+        target = _reference_linvel_b(self.command_manager, self.asset)[:, :, :2]
+        return (target - command).norm(dim=-1).mean(dim=1, keepdim=True)
+
+
+class facet_command_actual_vel_b_error(Reward[ImpedanceCommandManager]):
+    """Diagnostic: command-to-CoM velocity error in the body frame."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_b[:, :2]
+        current = self.asset.data.root_com_lin_vel_b[:, :2]
         return (current - command).norm(dim=-1, keepdim=True)
 
 
