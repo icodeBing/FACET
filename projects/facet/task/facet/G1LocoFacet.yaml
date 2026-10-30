@@ -53,7 +53,7 @@ command:
   stand_prob: 0.0
   # The released Unitree gait reward uses a fixed episode phase. Keep the
   # target observable and avoid adding a second source of phase variation.
-  randomize_gait_phase: false
+  randomize_gait_phase: true
   # Short pelvis impulses are part of this experiment.  The impulse is applied
   # both to the physical pelvis and to the FACET reference dynamics.
   # Disturbance robustness is added after nominal walking is stable. External
@@ -189,7 +189,7 @@ reward:
       max_separation: 0.30
       scale: 0.08
     biped_alternating_contact:
-      weight: 1.0
+      weight: 2.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       threshold: 0.55
@@ -248,9 +248,9 @@ reward:
     # A 0.8 s cycle with 55% stance leaves about 0.36 s for swing. The
     # inherited 0.5 s minimum-air-time penalty contradicted that phase target.
     feet_air_time:
-      weight: 0.5
+      weight: 1.5
       body_names: ".*ankle_roll_link"
-      thres: 0.3
+      thres: 0.25
     feet_sliding:
       weight: 0.3
       body_names: ".*_ankle_roll_link"
