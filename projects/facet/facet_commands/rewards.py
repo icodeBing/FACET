@@ -94,6 +94,42 @@ class facet_track_lin_vel(Reward[ImpedanceCommandManager]):
         return reward, active
 
 
+class root_yaw_rate_l2(Reward[ImpedanceCommandManager]):
+    """Penalize yaw-rate error for straight walking without disturbances."""
+
+    def __init__(self, env, weight: float):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+
+    def _compute(self) -> torch.Tensor:
+        current = self.asset.data.root_com_ang_vel_b[:, 2:3]
+        target = self.command_manager.cmd_yawvel_b
+        error = (current - target).square()
+        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+        active = (~self.command_manager.is_standing_env) & (~force_active)
+        return -error, active
+
+
+class root_lateral_velocity_l2(Reward[ImpedanceCommandManager]):
+    """Keep CoM lateral velocity at the commanded value in the yaw frame."""
+
+    def __init__(self, env, weight: float):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+
+    def _compute(self) -> torch.Tensor:
+        current = self.asset.data.root_com_lin_vel_b[:, 1:2]
+        target = self.command_manager.cmd_linvel_b[:, 1:2]
+        error = (current - target).square()
+        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+        active = (~self.command_manager.is_standing_env) & (~force_active)
+        return -error, active
+
+
 class facet_command_linvel_x(Reward[ImpedanceCommandManager]):
     """Diagnostic: commanded forward velocity in the world frame (m/s)."""
 

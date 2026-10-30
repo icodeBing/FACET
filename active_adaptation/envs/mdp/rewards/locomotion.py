@@ -558,6 +558,107 @@ class biped_knee_phase_symmetry(Reward):
         return reward, active
 
 
+class biped_stance_knee_posture(Reward):
+    """Keep the scheduled support knee near its nominal flexion.
+
+    Swing-knee rewards do not constrain the other leg while it supports the
+    body.  This term prevents one support leg from collapsing into a nearly
+    straight posture while the other remains bent, which produces asymmetric
+    pelvis height and unreliable foot placement.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        joint_names: list[str],
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        sigma: float = 0.12,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        ids = self.asset.find_joints(joint_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("biped_stance_knee_posture requires two ordered knees")
+        self.knee_ids = torch.tensor(ids, device=self.device)
+        self.default = self.asset.data.default_joint_pos[:, self.knee_ids].clone()
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.sigma = float(sigma)
+        if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
+            raise ValueError("period must be positive and stance_ratio in (0, 1)")
+        if self.sigma <= 0.0:
+            raise ValueError("sigma must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        _, is_stance, _ = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        knee = self.asset.data.joint_pos[:, self.knee_ids]
+        reward = torch.exp(-((knee - self.default) / self.sigma).square())
+        stance = is_stance.float()
+        reward = (reward * stance).sum(dim=1, keepdim=True) / stance.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1.0)
+        active = (~self.command_manager.is_standing_env) & is_stance.any(
+            dim=1, keepdim=True
+        )
+        return reward, active
+
+
+class biped_swing_hip_flexion(Reward):
+    """Give each swing thigh a phase-shaped flexion target.
+
+    ``target_flexion`` is a signed joint displacement.  G1's hip-pitch
+    convention uses a negative displacement for forward thigh swing, so the
+    sign is deliberately configurable instead of being hidden in the reward.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        joint_names: list[str],
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        target_flexion: float = 0.28,
+        flexion_sigma: float = 0.16,
+    ):
+        super().__init__(env, weight)
+        self.asset: Articulation = self.env.scene.articulations["robot"]
+        ids = self.asset.find_joints(joint_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("biped_swing_hip_flexion requires two ordered hips")
+        self.hip_ids = torch.tensor(ids, device=self.device)
+        self.default = self.asset.data.default_joint_pos[:, self.hip_ids].clone()
+        self.period = float(period)
+        self.stance_ratio = float(stance_ratio)
+        self.target_flexion = float(target_flexion)
+        self.flexion_sigma = float(flexion_sigma)
+        if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
+            raise ValueError("period must be positive and stance_ratio in (0, 1)")
+        if abs(self.target_flexion) <= 0.0 or self.flexion_sigma <= 0.0:
+            raise ValueError("target_flexion must be nonzero and flexion_sigma positive")
+
+    def _compute(self) -> torch.Tensor:
+        _, _, swing_phase = _biped_gait_phase(
+            self.env, self.period, self.stance_ratio
+        )
+        in_swing = swing_phase > 0.0
+        hip = self.asset.data.joint_pos[:, self.hip_ids]
+        target = self.default + self.target_flexion * torch.sin(
+            torch.pi * swing_phase
+        )
+        reward = torch.exp(-((hip - target) / self.flexion_sigma).square())
+        reward = torch.where(in_swing, reward, torch.ones_like(reward))
+        reward = reward.amin(dim=1, keepdim=True)
+        active = (~self.command_manager.is_standing_env) & in_swing.any(
+            dim=1, keepdim=True
+        )
+        return reward, active
+
+
 class biped_swing_forward(Reward):
     """Track the command-aligned velocity of a full swing-foot stride."""
 

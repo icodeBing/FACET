@@ -87,7 +87,11 @@ class feet_lateral_separation(Reward):
 
     def _compute(self) -> torch.Tensor:
         root_pos = self.asset.data.root_link_pos_w
-        root_quat = self.asset.data.root_link_quat_w
+        # Foot width and ordering are planar quantities.  Projecting with the
+        # full root quaternion lets torso roll/pitch change the measured y
+        # separation, so use the yaw-only frame consistently for both the
+        # absolute bound and the signed left/right ordering constraint.
+        root_quat = yaw_quat(self.asset.data.root_link_quat_w)
         feet_pos_b = quat_rotate_inverse(
             root_quat.unsqueeze(1),
             self.asset.data.body_link_pos_w[:, self.body_ids] - root_pos.unsqueeze(1),

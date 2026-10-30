@@ -24,7 +24,15 @@ from active_adaptation.utils.timerfd import Timer
 from active_adaptation.utils.helpers import EpisodeStats
 from active_adaptation.learning.modules.vecnorm import VecNorm
 from active_adaptation.utils.wandb import parse_checkpoint
-from active_adaptation.utils.math import quat_rotate, quat_rotate_inverse, yaw_quat
+from active_adaptation.utils.math import (
+    euler_from_quat,
+    quat_conjugate,
+    quat_mul,
+    quat_rotate,
+    quat_rotate_inverse,
+    wrap_to_pi,
+    yaw_quat,
+)
 
 FILE_PATH = Path(__file__).parent
 CONFIG_PATH = FILE_PATH.parent / "cfg"
@@ -44,13 +52,23 @@ class GaitCsvRecorder:
         self.contact_sensor = self.env.scene.sensors["contact_forces"]
         foot_names = ["left_ankle_roll_link", "right_ankle_roll_link"]
         knee_names = ["left_knee_joint", "right_knee_joint"]
+        hip_names = ["left_hip_pitch_joint", "right_hip_pitch_joint"]
         self.foot_ids = self.asset.find_bodies(foot_names, preserve_order=True)[0]
         self.contact_ids = self.contact_sensor.find_bodies(
             foot_names, preserve_order=True
         )[0]
         self.knee_ids = self.asset.find_joints(knee_names, preserve_order=True)[0]
-        if len(self.foot_ids) != 2 or len(self.contact_ids) != 2 or len(self.knee_ids) != 2:
+        self.hip_ids = self.asset.find_joints(hip_names, preserve_order=True)[0]
+        self.torso_id = self.asset.find_bodies(["torso_link"], preserve_order=True)[0]
+        if (
+            len(self.foot_ids) != 2
+            or len(self.contact_ids) != 2
+            or len(self.knee_ids) != 2
+            or len(self.hip_ids) != 2
+            or len(self.torso_id) != 1
+        ):
             raise ValueError("G1 gait telemetry could not resolve both feet and knees")
+        self.torso_id = self.torso_id[0]
 
         self.period = float(task_cfg.observation.policy.gait_phase.period)
         self.stance_ratio = float(
@@ -131,6 +149,12 @@ class GaitCsvRecorder:
             "left_touchdown_interval_s", "right_touchdown_interval_s",
             "left_knee_angle_rad", "right_knee_angle_rad",
             "left_knee_offset_rad", "right_knee_offset_rad",
+            "left_hip_pitch_angle_rad", "right_hip_pitch_angle_rad",
+            "left_hip_pitch_offset_rad", "right_hip_pitch_offset_rad",
+            "left_foot_pitch_rel_torso_rad", "right_foot_pitch_rel_torso_rad",
+            "left_foot_roll_rel_torso_rad", "right_foot_roll_rel_torso_rad",
+            "left_foot_yaw_error_rad", "right_foot_yaw_error_rad",
+            "root_com_y_m", "root_com_height_m", "root_roll_rad", "root_pitch_rad",
             "command_vx_yaw_mps", "command_vy_yaw_mps",
             "facet_reference_vx_yaw_mps", "facet_reference_vy_yaw_mps",
             "actual_com_vx_yaw_mps", "actual_com_vy_yaw_mps",
@@ -169,12 +193,21 @@ class GaitCsvRecorder:
         command = self.env.command_manager
         root_pos = asset.data.root_link_pos_w[0]
         root_quat = asset.data.root_link_quat_w[0]
+        root_rpy = euler_from_quat(root_quat)
+        root_com_pos = asset.data.root_com_pos_w[0]
         yaw_only = yaw_quat(root_quat)
         foot_pos_w = asset.data.body_link_pos_w[0, self.foot_ids]
         foot_pos_b = quat_rotate_inverse(
             yaw_only.expand(2, -1), foot_pos_w - root_pos.unsqueeze(0)
         )
         foot_quat_w = asset.data.body_link_quat_w[0, self.foot_ids]
+        torso_quat = asset.data.body_link_quat_w[0, self.torso_id]
+        foot_relative_torso = quat_mul(
+            quat_conjugate(torso_quat).expand(2, -1), foot_quat_w
+        )
+        foot_relative_rpy = euler_from_quat(foot_relative_torso)
+        foot_world_rpy = euler_from_quat(foot_quat_w)
+        foot_yaw_error = wrap_to_pi(foot_world_rpy[:, 2] - root_rpy[2])
         contacts = (
             self.contact_sensor.data.current_contact_time[0, self.contact_ids] > 0.0
         )
@@ -244,6 +277,8 @@ class GaitCsvRecorder:
 
         default_knees = asset.data.default_joint_pos[0, self.knee_ids]
         knees = asset.data.joint_pos[0, self.knee_ids]
+        hips = asset.data.joint_pos[0, self.hip_ids]
+        default_hips = asset.data.default_joint_pos[0, self.hip_ids]
         command_xy = command.cmd_linvel_b[0, :2]
         reference_w = command.surr_lin_vel_target[0, :, :2]
         reference_yaw = yaw_quat(root_quat).expand(reference_w.shape[0], -1)
@@ -304,6 +339,20 @@ class GaitCsvRecorder:
             "right_knee_angle_rad": self._float(knees[1]),
             "left_knee_offset_rad": self._float(knees[0] - default_knees[0]),
             "right_knee_offset_rad": self._float(knees[1] - default_knees[1]),
+            "left_hip_pitch_angle_rad": self._float(hips[0]),
+            "right_hip_pitch_angle_rad": self._float(hips[1]),
+            "left_hip_pitch_offset_rad": self._float(hips[0] - default_hips[0]),
+            "right_hip_pitch_offset_rad": self._float(hips[1] - default_hips[1]),
+            "left_foot_pitch_rel_torso_rad": self._float(foot_relative_rpy[0, 1]),
+            "right_foot_pitch_rel_torso_rad": self._float(foot_relative_rpy[1, 1]),
+            "left_foot_roll_rel_torso_rad": self._float(foot_relative_rpy[0, 0]),
+            "right_foot_roll_rel_torso_rad": self._float(foot_relative_rpy[1, 0]),
+            "left_foot_yaw_error_rad": self._float(foot_yaw_error[0]),
+            "right_foot_yaw_error_rad": self._float(foot_yaw_error[1]),
+            "root_com_y_m": self._float(root_com_pos[1]),
+            "root_com_height_m": self._float(root_com_pos[2]),
+            "root_roll_rad": self._float(root_rpy[0]),
+            "root_pitch_rad": self._float(root_rpy[1]),
             "command_vx_yaw_mps": self._float(command_xy[0]),
             "command_vy_yaw_mps": self._float(command_xy[1]),
             "facet_reference_vx_yaw_mps": self._float(reference_b[0]),

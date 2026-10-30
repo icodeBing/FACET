@@ -75,14 +75,20 @@ reward:
     impedance_vel: {weight: 1.25}
     # Nominal walking anchor. It is disabled automatically while an external
     # impulse is active, preserving FACET's compliant response during tests.
-    facet_track_lin_vel: {weight: 0.75, sigma: 0.25}
+    facet_track_lin_vel: {weight: 1.0, sigma: 0.20}
+    # Direct nominal CoM tracking prevents a low-speed shuffling solution;
+    # FACET reference tracking remains active above it.
+    linvel_exp: {weight: 0.75, sigma: 0.20, dim: 2}
     impedance_yaw_pos: {weight: 0.75}
     impedance_yaw_vel: {weight: 1.5}
     # Measures torso pitch and roll directly through the body gravity vector.
-    body_upright: {weight: 3.0, body_name: torso_link}
-    base_height_exp: {weight: 1.5, target_height: 0.74}
-    angvel_xy_l2: {weight: 0.15, body_names: [pelvis, torso_link]}
-    angvel_z_exp: {weight: 1.2, gamma: 0.8}
+    body_upright: {weight: 4.0, body_name: torso_link}
+    root_upright: {weight: 0.75}
+    base_height_exp: {weight: 1.8, target_height: 0.74}
+    angvel_xy_l2: {weight: 0.25, body_names: [pelvis, torso_link]}
+    angvel_z_exp: {weight: 1.5, gamma: 0.8}
+    root_yaw_rate_l2: {weight: 0.15}
+    root_lateral_velocity_l2: {weight: 0.25}
 
     # Restore the posture anchors used by the validated direct-velocity task.
     # These constrain the unlocked waist and prevent hip yaw/roll from being
@@ -106,18 +112,26 @@ reward:
     # Unitree-style phase-aware gait shaping supplements FACET reference
     # tracking. The observable phase and contact target both use 0.8 s.
     feet_clearance:
-      weight: 1.0
+      # This legacy term uses total xy distance; keep it soft so it cannot
+      # replace the explicit lateral-width constraint below with fore-aft gap.
+      weight: 0.50
       feet_names: ".*_ankle_roll_link"
     feet_orientation:
-      weight: 0.15
+      weight: 0.35
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
     feet_pitch_neutral:
-      weight: 0.35
+      weight: 0.50
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
       target_pitch: 0.0
       pitch_sigma: 0.12
+    feet_roll_neutral:
+      weight: 0.35
+      feet_names: ".*_ankle_roll_link"
+      body_name: torso_link
+      target_roll: 0.0
+      roll_sigma: 0.10
     # Kept available for comparison, but excluded from training: the current
     # velocity gate gives near-static feet almost full reward.
     max_feet_height:
@@ -125,13 +139,13 @@ reward:
       body_names: ".*_ankle_roll_link"
       target_height: 0.10
     biped_swing_height:
-      weight: 0.80
+      weight: 1.10
       body_names: ".*_ankle_roll_link"
       period: 0.8
       stance_ratio: 0.55
       nominal_height: 0.025
-      clearance: 0.07
-      height_sigma: 0.045
+      clearance: 0.08
+      height_sigma: 0.040
     biped_swing_knee_flexion:
       weight: 0.60
       joint_names: ["left_knee_joint", "right_knee_joint"]
@@ -140,16 +154,31 @@ reward:
       target_flexion: 0.48
       flexion_sigma: 0.20
     biped_knee_phase_symmetry:
-      weight: 0.25
+      weight: 0.65
       joint_names: ["left_knee_joint", "right_knee_joint"]
       period: 0.8
       stance_ratio: 0.55
       target_flexion: 0.48
-      sigma: 0.22
+      sigma: 0.18
+    biped_stance_knee_posture:
+      weight: 0.80
+      joint_names: ["left_knee_joint", "right_knee_joint"]
+      period: 0.8
+      stance_ratio: 0.55
+      sigma: 0.12
+    biped_swing_hip_flexion:
+      weight: 0.40
+      joint_names: ["left_hip_pitch_joint", "right_hip_pitch_joint"]
+      period: 0.8
+      stance_ratio: 0.55
+      # G1 hip-pitch convention: negative displacement swings the thigh
+      # forward from the nominal -0.1 rad posture.
+      target_flexion: -0.28
+      flexion_sigma: 0.16
     # Low-weight forward swing shaping provides a dense step signal while
     # limiting the requested stride to the commanded walking speed.
     biped_swing_forward:
-      weight: 0.50
+      weight: 0.65
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -159,7 +188,7 @@ reward:
       max_step_length: 0.30
       velocity_sigma: 0.28
     biped_swing_foot_placement:
-      weight: 0.50
+      weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
@@ -168,26 +197,28 @@ reward:
       max_step_length: 0.24
       position_sigma: 0.10
     biped_stride_limit:
-      weight: 0.5
+      weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       max_separation: 0.30
       scale: 0.08
     biped_stance_foot_velocity:
-      weight: 0.35
+      weight: 0.50
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
       speed_scale: 0.35
     feet_lateral_separation:
-      # Keep the anti-crossing guard without suppressing normal swing.
-      weight: 0.5
+      # The CSV showed a 5 cm median signed gap and collision/overlap in
+      # roughly 29% of frames. Enforce a real lateral corridor and left/right
+      # ordering instead of relying on total foot-center distance.
+      weight: 1.50
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
-      min_separation: 0.1
-      min_knee_separation: 0.06
-      order_scale: 0.16
-      max_separation: 0.30
-      scale: 0.08
+      min_separation: 0.12
+      min_knee_separation: 0.08
+      order_scale: 0.08
+      max_separation: 0.28
+      scale: 0.06
     biped_alternating_contact:
       weight: 2.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -252,8 +283,15 @@ reward:
       body_names: ".*ankle_roll_link"
       thres: 0.25
     feet_sliding:
-      weight: 0.3
+      weight: 0.40
       body_names: ".*_ankle_roll_link"
+
+    # Keep hip pitch near its nominal value while the leg is supporting. The
+    # phase-specific term above supplies the swing excursion.
+    joint_deviation_l2_hip_pitch:
+      _target_: joint_deviation_l2
+      weight: 0.15
+      joint_names: [.*hip_pitch_joint]
 
     # FACET evaluation telemetry. Logged but disabled, so it does not alter training.
     facet_external_force_norm: {weight: 1.0, enabled: false}
