@@ -79,16 +79,19 @@ reward:
     # Direct nominal CoM tracking prevents a low-speed shuffling solution;
     # FACET reference tracking remains active above it.
     linvel_exp: {weight: 0.75, sigma: 0.20, dim: 2}
-    impedance_yaw_pos: {weight: 0.75}
-    impedance_yaw_vel: {weight: 1.5}
+    # The last replay accumulated 3-4 rad of heading drift in each 20 s
+    # episode despite a zero yaw command. Keep heading and yaw rate anchored
+    # more strongly during nominal straight walking.
+    impedance_yaw_pos: {weight: 2.0}
+    impedance_yaw_vel: {weight: 2.0}
     # Measures torso pitch and roll directly through the body gravity vector.
     body_upright: {weight: 4.0, body_name: torso_link}
     root_upright: {weight: 0.75}
     base_height_exp: {weight: 1.8, target_height: 0.74}
-    angvel_xy_l2: {weight: 0.25, body_names: [pelvis, torso_link]}
+    angvel_xy_l2: {weight: 0.40, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.5, gamma: 0.8}
-    root_yaw_rate_l2: {weight: 0.15}
-    root_lateral_velocity_l2: {weight: 0.25}
+    root_yaw_rate_l2: {weight: 0.80}
+    root_lateral_velocity_l2: {weight: 0.80}
 
     # Restore the posture anchors used by the validated direct-velocity task.
     # These constrain the unlocked waist and prevent hip yaw/roll from being
@@ -117,21 +120,21 @@ reward:
       weight: 0.50
       feet_names: ".*_ankle_roll_link"
     feet_orientation:
-      weight: 0.35
+      weight: 0.75
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
     feet_pitch_neutral:
-      weight: 0.50
+      weight: 0.80
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
       target_pitch: 0.0
-      pitch_sigma: 0.12
+      pitch_sigma: 0.10
     feet_roll_neutral:
-      weight: 0.35
+      weight: 0.80
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
       target_roll: 0.0
-      roll_sigma: 0.10
+      roll_sigma: 0.08
     # Kept available for comparison, but excluded from training: the current
     # velocity gate gives near-static feet almost full reward.
     max_feet_height:
@@ -208,14 +211,14 @@ reward:
       stance_ratio: 0.55
       speed_scale: 0.35
     feet_lateral_separation:
-      # The CSV showed a 5 cm median signed gap and collision/overlap in
-      # roughly 29% of frames. Enforce a real lateral corridor and left/right
-      # ordering instead of relying on total foot-center distance.
-      weight: 1.50
+      # The new replay improved the median signed gap to 9.8 cm and reduced
+      # negative gaps below 1%, but mesh-vertex overlap flags remain in about
+      # 11-13% of frames. Preserve foot ordering with additional width margin.
+      weight: 2.00
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
-      min_separation: 0.12
-      min_knee_separation: 0.08
+      min_separation: 0.145
+      min_knee_separation: 0.10
       order_scale: 0.08
       max_separation: 0.28
       scale: 0.06
@@ -283,7 +286,7 @@ reward:
       body_names: ".*ankle_roll_link"
       thres: 0.25
     feet_sliding:
-      weight: 0.40
+      weight: 0.60
       body_names: ".*_ankle_roll_link"
 
     # Keep hip pitch near its nominal value while the leg is supporting. The
@@ -292,6 +295,18 @@ reward:
       _target_: joint_deviation_l2
       weight: 0.15
       joint_names: [.*hip_pitch_joint]
+
+    # Reduce ankle chatter while keeping enough ankle authority for balance.
+    joint_deviation_l2_ankle:
+      _target_: joint_deviation_l2
+      weight: 0.12
+      joint_names: [".*ankle_pitch_joint", ".*ankle_roll_joint"]
+    joint_vel_l2_ankle:
+      _target_: joint_vel_l2
+      weight: 0.02
+      joint_names: [".*ankle_pitch_joint", ".*ankle_roll_joint"]
+    action_rate_l2:
+      weight: 0.01
 
     # FACET evaluation telemetry. Logged but disabled, so it does not alter training.
     facet_external_force_norm: {weight: 1.0, enabled: false}
