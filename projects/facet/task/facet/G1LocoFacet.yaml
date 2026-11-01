@@ -120,7 +120,7 @@ reward:
       weight: 0.50
       feet_names: ".*_ankle_roll_link"
     feet_orientation:
-      weight: 0.75
+      weight: 1.25
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
     feet_pitch_neutral:
@@ -130,7 +130,7 @@ reward:
       target_pitch: 0.0
       pitch_sigma: 0.10
     feet_roll_neutral:
-      weight: 0.80
+      weight: 1.20
       feet_names: ".*_ankle_roll_link"
       body_name: torso_link
       target_roll: 0.0

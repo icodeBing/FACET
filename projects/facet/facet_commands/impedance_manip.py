@@ -267,6 +267,7 @@ class ImpedanceCommandManager(Command):
         with torch.device(self.device):
             self.ref_steps = torch.tensor(ref_steps)
             self.root_link_rpy_w = torch.zeros(self.num_envs, 3)
+            self.command_heading_w = torch.zeros(self.num_envs)
             self.virtual_mass_range = torch.tensor(virtual_mass_range).float()
 
             # states of the reference dynamics
@@ -475,6 +476,7 @@ class ImpedanceCommandManager(Command):
         self.rot_base.pos_w[env_ids] = root_link_rpy.unsqueeze(1)
         self.rot_base.vel_w[env_ids] = self.asset.data.root_link_ang_vel_w[env_ids].unsqueeze(1)
         self.root_link_rpy_w[env_ids] = root_link_rpy
+        self.command_heading_w[env_ids] = root_link_rpy[:, 2]
         
         if self.has_eef:
             self.setpoint_eef_b[env_ids] = torch.tensor([0.60, 0.0, 0.25], device=self.device)
@@ -535,8 +537,11 @@ class ImpedanceCommandManager(Command):
             ],
         )
         if self.fixed_velocity:
+            self.command_heading_w.add_(
+                self.cmd_yawvel_b[:, 0] * self.env.step_dt
+            )
+            self.command_heading_w.copy_(wrap_to_pi(self.command_heading_w))
             self._update_velocity_command(mask)
-            self._set_velocity_target(torch.arange(self.num_envs, device=self.device))
         else:
             self.setpoint_w[:, :3] += self.setpoint_vel_w * self.env.step_dt
         
@@ -636,7 +641,7 @@ class ImpedanceCommandManager(Command):
         """Convert target velocities to impedance setpoints (paper Eq. 2 setup)."""
         if env_ids.numel() == 0:
             return
-        yaw = self.root_link_rpy_w[env_ids, 2]
+        yaw = self.command_heading_w[env_ids]
         self.cmd_linvel_w[env_ids] = yaw_rotate(yaw, self.cmd_linvel_b[env_ids])
         lin_kp = self.cmd.kp_base[env_ids, 0:1]
         lin_kd = self.cmd.kd_base[env_ids, 0:1]
@@ -648,21 +653,21 @@ class ImpedanceCommandManager(Command):
         )
         self.setpoint_w[env_ids, 3:6] = self.root_link_rpy_w[env_ids]
         self.setpoint_w[env_ids, 2] = self.asset.data.root_com_pos_w[env_ids, 2]
-        self.setpoint_w[env_ids, 5] += self.cmd_yawvel_b[env_ids, 0] * (
-            ang_kd[:, 0] / ang_kp[:, 0].clamp_min(1e-6)
+        self.setpoint_w[env_ids, 5] = self.command_heading_w[env_ids] + (
+            self.cmd_yawvel_b[env_ids, 0]
+            * ang_kd[:, 0]
+            / ang_kp[:, 0].clamp_min(1e-6)
         )
 
     def _update_velocity_command(self, resample_mask: torch.Tensor):
         env_ids = resample_mask.nonzero().squeeze(-1)
         if env_ids.numel() > 0:
             self._sample_velocity(env_ids)
-            # The target is refreshed from the current robot state at each sample.
+            # Refresh the translational setpoint while preserving the episode
+            # heading target; rebasing it to current yaw creates a curved path.
             self.setpoint_vel_w[env_ids] = 0.0
-        self.cmd_linvel_w = yaw_rotate(self.root_link_rpy_w[:, 2], self.cmd_linvel_b)
         self.command_speed = self.cmd_linvel_b[:, :2].norm(dim=-1, keepdim=True)
-        # Rebuild x_des from the current robot state every control step.  This
-        # is the paper's fixed-velocity construction and prevents the reference
-        # model from tracking a stale setpoint after the robot has moved.
+        # Rebuild x_des each control step using the fixed world heading.
         self._set_velocity_target(torch.arange(self.num_envs, device=self.device))
 
     def debug_draw(self):

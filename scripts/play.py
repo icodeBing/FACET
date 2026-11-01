@@ -158,7 +158,8 @@ class GaitCsvRecorder:
             "command_vx_yaw_mps", "command_vy_yaw_mps",
             "facet_reference_vx_yaw_mps", "facet_reference_vy_yaw_mps",
             "actual_com_vx_yaw_mps", "actual_com_vy_yaw_mps",
-            "root_yaw_rad", "root_yaw_rate_radps",
+            "root_yaw_rad", "command_heading_w_rad", "heading_error_rad",
+            "root_yaw_rate_radps",
         ]
         self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
         self.writer.writeheader()
@@ -290,6 +291,8 @@ class GaitCsvRecorder:
             yaw_only, asset.data.root_com_lin_vel_w[0]
         )[:2]
         root_yaw_rate = asset.data.root_link_ang_vel_w[0, 2]
+        command_heading = command.command_heading_w[0]
+        heading_error = wrap_to_pi(asset.data.heading_w[0] - command_heading)
 
         left_contact = bool(contacts[0].item())
         right_contact = bool(contacts[1].item())
@@ -360,6 +363,8 @@ class GaitCsvRecorder:
             "actual_com_vx_yaw_mps": self._float(actual_com[0]),
             "actual_com_vy_yaw_mps": self._float(actual_com[1]),
             "root_yaw_rad": self._float(asset.data.heading_w[0]),
+            "command_heading_w_rad": self._float(command_heading),
+            "heading_error_rad": self._float(heading_error),
             "root_yaw_rate_radps": self._float(root_yaw_rate),
         }
 
