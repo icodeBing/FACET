@@ -53,18 +53,30 @@ class GaitCsvRecorder:
         foot_names = ["left_ankle_roll_link", "right_ankle_roll_link"]
         knee_names = ["left_knee_joint", "right_knee_joint"]
         hip_names = ["left_hip_pitch_joint", "right_hip_pitch_joint"]
+        leg_joint_names = [
+            "left_hip_pitch_joint", "right_hip_pitch_joint",
+            "left_hip_roll_joint", "right_hip_roll_joint",
+            "left_hip_yaw_joint", "right_hip_yaw_joint",
+            "left_knee_joint", "right_knee_joint",
+            "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+            "left_ankle_roll_joint", "right_ankle_roll_joint",
+        ]
         self.foot_ids = self.asset.find_bodies(foot_names, preserve_order=True)[0]
         self.contact_ids = self.contact_sensor.find_bodies(
             foot_names, preserve_order=True
         )[0]
         self.knee_ids = self.asset.find_joints(knee_names, preserve_order=True)[0]
         self.hip_ids = self.asset.find_joints(hip_names, preserve_order=True)[0]
+        self.leg_joint_ids = self.asset.find_joints(
+            leg_joint_names, preserve_order=True
+        )[0]
         self.torso_id = self.asset.find_bodies(["torso_link"], preserve_order=True)[0]
         if (
             len(self.foot_ids) != 2
             or len(self.contact_ids) != 2
             or len(self.knee_ids) != 2
             or len(self.hip_ids) != 2
+            or len(self.leg_joint_ids) != len(leg_joint_names)
             or len(self.torso_id) != 1
         ):
             raise ValueError("G1 gait telemetry could not resolve both feet and knees")
@@ -151,15 +163,31 @@ class GaitCsvRecorder:
             "left_knee_offset_rad", "right_knee_offset_rad",
             "left_hip_pitch_angle_rad", "right_hip_pitch_angle_rad",
             "left_hip_pitch_offset_rad", "right_hip_pitch_offset_rad",
+            "left_hip_pitch_vel_radps", "right_hip_pitch_vel_radps",
+            "left_hip_roll_vel_radps", "right_hip_roll_vel_radps",
+            "left_hip_yaw_vel_radps", "right_hip_yaw_vel_radps",
+            "left_knee_vel_radps", "right_knee_vel_radps",
+            "left_ankle_pitch_vel_radps", "right_ankle_pitch_vel_radps",
+            "left_ankle_roll_vel_radps", "right_ankle_roll_vel_radps",
+            "left_hip_pitch_acc_radps2", "right_hip_pitch_acc_radps2",
+            "left_hip_roll_acc_radps2", "right_hip_roll_acc_radps2",
+            "left_hip_yaw_acc_radps2", "right_hip_yaw_acc_radps2",
+            "left_knee_acc_radps2", "right_knee_acc_radps2",
+            "left_ankle_pitch_acc_radps2", "right_ankle_pitch_acc_radps2",
+            "left_ankle_roll_acc_radps2", "right_ankle_roll_acc_radps2",
+            "left_leg_joint_vel_rms_radps", "right_leg_joint_vel_rms_radps",
+            "left_leg_joint_acc_rms_radps2", "right_leg_joint_acc_rms_radps2",
             "left_foot_pitch_rel_torso_rad", "right_foot_pitch_rel_torso_rad",
             "left_foot_roll_rel_torso_rad", "right_foot_roll_rel_torso_rad",
+            "foot_roll_difference_rad", "foot_roll_mean_rad",
             "left_foot_yaw_error_rad", "right_foot_yaw_error_rad",
+            "left_foot_vertical_vel_mps", "right_foot_vertical_vel_mps",
             "root_com_y_m", "root_com_height_m", "root_roll_rad", "root_pitch_rad",
             "command_vx_yaw_mps", "command_vy_yaw_mps",
             "facet_reference_vx_yaw_mps", "facet_reference_vy_yaw_mps",
             "actual_com_vx_yaw_mps", "actual_com_vy_yaw_mps",
             "root_yaw_rad", "command_heading_w_rad", "heading_error_rad",
-            "root_yaw_rate_radps",
+            "root_roll_rate_radps", "root_pitch_rate_radps", "root_yaw_rate_radps",
         ]
         self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
         self.writer.writeheader()
@@ -202,6 +230,7 @@ class GaitCsvRecorder:
             yaw_only.expand(2, -1), foot_pos_w - root_pos.unsqueeze(0)
         )
         foot_quat_w = asset.data.body_link_quat_w[0, self.foot_ids]
+        foot_lin_vel_w = asset.data.body_lin_vel_w[0, self.foot_ids]
         torso_quat = asset.data.body_link_quat_w[0, self.torso_id]
         foot_relative_torso = quat_mul(
             quat_conjugate(torso_quat).expand(2, -1), foot_quat_w
@@ -280,6 +309,14 @@ class GaitCsvRecorder:
         knees = asset.data.joint_pos[0, self.knee_ids]
         hips = asset.data.joint_pos[0, self.hip_ids]
         default_hips = asset.data.default_joint_pos[0, self.hip_ids]
+        leg_vel = asset.data.joint_vel[0, self.leg_joint_ids]
+        leg_acc = asset.data.joint_acc[0, self.leg_joint_ids]
+        # The ordered list alternates left/right for each joint, so selecting
+        # even/odd entries gives comparable six-joint left/right RMS values.
+        left_leg_vel = leg_vel[0::2]
+        right_leg_vel = leg_vel[1::2]
+        left_leg_acc = leg_acc[0::2]
+        right_leg_acc = leg_acc[1::2]
         command_xy = command.cmd_linvel_b[0, :2]
         reference_w = command.surr_lin_vel_target[0, :, :2]
         reference_yaw = yaw_quat(root_quat).expand(reference_w.shape[0], -1)
@@ -290,6 +327,9 @@ class GaitCsvRecorder:
         actual_com = quat_rotate_inverse(
             yaw_only, asset.data.root_com_lin_vel_w[0]
         )[:2]
+        root_ang_vel_b = quat_rotate_inverse(
+            root_quat, asset.data.root_link_ang_vel_w[0]
+        )
         root_yaw_rate = asset.data.root_link_ang_vel_w[0, 2]
         command_heading = command.command_heading_w[0]
         heading_error = wrap_to_pi(asset.data.heading_w[0] - command_heading)
@@ -346,12 +386,46 @@ class GaitCsvRecorder:
             "right_hip_pitch_angle_rad": self._float(hips[1]),
             "left_hip_pitch_offset_rad": self._float(hips[0] - default_hips[0]),
             "right_hip_pitch_offset_rad": self._float(hips[1] - default_hips[1]),
+            "left_hip_pitch_vel_radps": self._float(leg_vel[0]),
+            "right_hip_pitch_vel_radps": self._float(leg_vel[1]),
+            "left_hip_roll_vel_radps": self._float(leg_vel[2]),
+            "right_hip_roll_vel_radps": self._float(leg_vel[3]),
+            "left_hip_yaw_vel_radps": self._float(leg_vel[4]),
+            "right_hip_yaw_vel_radps": self._float(leg_vel[5]),
+            "left_knee_vel_radps": self._float(leg_vel[6]),
+            "right_knee_vel_radps": self._float(leg_vel[7]),
+            "left_ankle_pitch_vel_radps": self._float(leg_vel[8]),
+            "right_ankle_pitch_vel_radps": self._float(leg_vel[9]),
+            "left_ankle_roll_vel_radps": self._float(leg_vel[10]),
+            "right_ankle_roll_vel_radps": self._float(leg_vel[11]),
+            "left_hip_pitch_acc_radps2": self._float(leg_acc[0]),
+            "right_hip_pitch_acc_radps2": self._float(leg_acc[1]),
+            "left_hip_roll_acc_radps2": self._float(leg_acc[2]),
+            "right_hip_roll_acc_radps2": self._float(leg_acc[3]),
+            "left_hip_yaw_acc_radps2": self._float(leg_acc[4]),
+            "right_hip_yaw_acc_radps2": self._float(leg_acc[5]),
+            "left_knee_acc_radps2": self._float(leg_acc[6]),
+            "right_knee_acc_radps2": self._float(leg_acc[7]),
+            "left_ankle_pitch_acc_radps2": self._float(leg_acc[8]),
+            "right_ankle_pitch_acc_radps2": self._float(leg_acc[9]),
+            "left_ankle_roll_acc_radps2": self._float(leg_acc[10]),
+            "right_ankle_roll_acc_radps2": self._float(leg_acc[11]),
+            "left_leg_joint_vel_rms_radps": self._float(left_leg_vel.square().mean().sqrt()),
+            "right_leg_joint_vel_rms_radps": self._float(right_leg_vel.square().mean().sqrt()),
+            "left_leg_joint_acc_rms_radps2": self._float(left_leg_acc.square().mean().sqrt()),
+            "right_leg_joint_acc_rms_radps2": self._float(right_leg_acc.square().mean().sqrt()),
             "left_foot_pitch_rel_torso_rad": self._float(foot_relative_rpy[0, 1]),
             "right_foot_pitch_rel_torso_rad": self._float(foot_relative_rpy[1, 1]),
             "left_foot_roll_rel_torso_rad": self._float(foot_relative_rpy[0, 0]),
             "right_foot_roll_rel_torso_rad": self._float(foot_relative_rpy[1, 0]),
+            "foot_roll_difference_rad": self._float(
+                foot_relative_rpy[0, 0] - foot_relative_rpy[1, 0]
+            ),
+            "foot_roll_mean_rad": self._float(foot_relative_rpy[:, 0].mean()),
             "left_foot_yaw_error_rad": self._float(foot_yaw_error[0]),
             "right_foot_yaw_error_rad": self._float(foot_yaw_error[1]),
+            "left_foot_vertical_vel_mps": self._float(foot_lin_vel_w[0, 2]),
+            "right_foot_vertical_vel_mps": self._float(foot_lin_vel_w[1, 2]),
             "root_com_y_m": self._float(root_com_pos[1]),
             "root_com_height_m": self._float(root_com_pos[2]),
             "root_roll_rad": self._float(root_rpy[0]),
@@ -365,6 +439,8 @@ class GaitCsvRecorder:
             "root_yaw_rad": self._float(asset.data.heading_w[0]),
             "command_heading_w_rad": self._float(command_heading),
             "heading_error_rad": self._float(heading_error),
+            "root_roll_rate_radps": self._float(root_ang_vel_b[0]),
+            "root_pitch_rate_radps": self._float(root_ang_vel_b[1]),
             "root_yaw_rate_radps": self._float(root_yaw_rate),
         }
 

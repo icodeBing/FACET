@@ -130,11 +130,23 @@ reward:
       target_pitch: 0.0
       pitch_sigma: 0.10
     feet_roll_neutral:
-      weight: 1.20
-      feet_names: ".*_ankle_roll_link"
+      weight: 1.00
+      feet_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       body_name: torso_link
       target_roll: 0.0
       roll_sigma: 0.08
+      period: 0.8
+      stance_ratio: 0.55
+      stance_sigma: 0.07
+      swing_sigma: 0.16
+    feet_roll_symmetry:
+      _target_: feet_roll_symmetry
+      weight: 0.80
+      feet_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      body_name: torso_link
+      target_mean_roll: 0.0
+      symmetry_sigma: 0.12
+      mean_sigma: 0.18
     # Kept available for comparison, but excluded from training: the current
     # velocity gate gives near-static feet almost full reward.
     max_feet_height:
@@ -305,8 +317,32 @@ reward:
       _target_: joint_vel_l2
       weight: 0.02
       joint_names: [".*ankle_pitch_joint", ".*ankle_roll_joint"]
+    # Mild whole-leg damping suppresses high-frequency knee/hip/ankle chatter
+    # without removing the phase-shaped swing excursion.
+    joint_vel_l2_legs:
+      _target_: joint_vel_l2
+      weight: 0.003
+      joint_names:
+        - ".*hip_pitch_joint"
+        - ".*hip_roll_joint"
+        - ".*hip_yaw_joint"
+        - ".*knee_joint"
+        - ".*ankle_pitch_joint"
+        - ".*ankle_roll_joint"
+    joint_acc_l2_legs:
+      _target_: joint_acc_l2
+      weight: 1.0e-5
+      joint_names:
+        - ".*hip_pitch_joint"
+        - ".*hip_roll_joint"
+        - ".*hip_yaw_joint"
+        - ".*knee_joint"
+        - ".*ankle_pitch_joint"
+        - ".*ankle_roll_joint"
     action_rate_l2:
-      weight: 0.01
+      weight: 0.015
+    action_rate2_l2:
+      weight: 0.003
 
     # FACET evaluation telemetry. Logged but disabled, so it does not alter training.
     facet_external_force_norm: {weight: 1.0, enabled: false}
