@@ -21,6 +21,11 @@ camera_follow: false
 camera_offset: [0.0, -4.0, 1.5]
 camera_lookat_offset: [0.0, 0.0, 0.8]
 
+# Draw the future FACET CoM preview and recent actual CoM trail at true XYZ.
+show_com_trajectories: false
+com_trajectory_max_points: 160
+com_trajectory_update_interval: 4
+
 # MuJoCo camera.  The tracking camera follows body id 1 (the robot root).
 # azimuth/elevation are degrees; distance/lookat are meters; fovy is degrees.
 camera:

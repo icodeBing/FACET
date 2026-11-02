@@ -10,6 +10,7 @@ import datetime
 import copy
 import csv
 import logging
+from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -485,6 +486,68 @@ def update_follow_camera(env, cfg):
         return
 
 
+class ComTrajectoryOverlay:
+    """Render the FACET CoM preview and the robot's recent ground track."""
+
+    def __init__(self, env, cfg):
+        self.enabled = bool(cfg.get("show_com_trajectories", False))
+        self.env = getattr(env, "base_env", env)
+        self.update_interval = max(1, int(cfg.get("com_trajectory_update_interval", 4)))
+        self.max_points = max(2, int(cfg.get("com_trajectory_max_points", 160)))
+        self.step_count = 0
+        self.episode_id = None
+        self.actual_points = deque(maxlen=self.max_points)
+        if not self.enabled:
+            return
+        if self.env.backend != "isaac":
+            raise ValueError("show_com_trajectories requires backend=isaac")
+        if self.env.num_envs != 1:
+            raise ValueError("show_com_trajectories requires task.num_envs=1")
+
+        self.command = self.env.command_manager
+        if not hasattr(self.command, "surr_pos_target"):
+            raise ValueError("The selected command manager has no FACET CoM reference")
+        self.asset = self.env.scene.articulations["robot"]
+        self.reference_marker = self.env.scene.create_sphere_marker(
+            "/Visuals/Play/FacetComReferencePreview",
+            color=(1.0, 0.55, 0.05),
+            radius=0.018,
+        )
+        self.actual_marker = self.env.scene.create_sphere_marker(
+            "/Visuals/Play/ActualComTrail",
+            color=(0.05, 0.85, 1.0),
+            radius=0.022,
+        )
+        print(
+            "CoM overlay enabled: orange=future FACET reference samples, "
+            "cyan=recent actual CoM trail; markers use their true world XYZ positions."
+        )
+
+    def update(self, step: int):
+        if not self.enabled:
+            return
+        self.step_count += 1
+        episode_id = int(self.env.episode_id[0].item())
+        if episode_id != self.episode_id:
+            self.episode_id = episode_id
+            self.actual_points.clear()
+
+        if self.step_count % self.update_interval != 0:
+            return
+
+        actual = self.asset.data.root_com_pos_w[0].detach().clone()
+        self.actual_points.append(actual)
+        reference = self.command.surr_pos_target[0].detach()
+        preview = torch.cat((actual.unsqueeze(0), reference), dim=0)
+        self.reference_marker.visualize(
+            translations=preview
+        )
+        actual_trail = torch.stack(tuple(self.actual_points))
+        self.actual_marker.visualize(
+            translations=actual_trail
+        )
+
+
 @VecNorm.freeze()
 def export_policy(env, policy, export_dir):
     fake_input = env.observation_spec[0].rand().cpu()
@@ -527,6 +590,7 @@ def main(cfg: DictConfig):
     assert not env.base_env.training
 
     timer = Timer(env.step_dt)
+    com_trajectory_overlay = ComTrajectoryOverlay(env, cfg)
 
     # Optional: refresh from URL/wandb in background so play loop never blocks on updates
     if checkpoint is not None and checkpoint.remote:
@@ -560,6 +624,7 @@ def main(cfg: DictConfig):
                 carry = rollout_policy(carry)
                 td, carry = env.step_and_maybe_reset(carry)
                 episode_stats.add(td)
+                com_trajectory_overlay.update(i)
 
                 if gait_row is not None:
                     gait_row["transition_done"] = transition_done(td)
