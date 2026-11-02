@@ -130,6 +130,65 @@ class root_lateral_velocity_l2(Reward[ImpedanceCommandManager]):
         return -error, active
 
 
+class root_pitch_rate_l2(Reward[ImpedanceCommandManager]):
+    """Damp forward/backward torso angular motion during nominal walking."""
+
+    def __init__(self, env, weight: float, body_name: str = "torso_link"):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.body_id = self.asset.find_bodies(body_name, preserve_order=True)[0]
+        if len(self.body_id) != 1:
+            raise ValueError("root_pitch_rate_l2 requires exactly one body")
+        self.body_id = self.body_id[0]
+
+    def _compute(self) -> torch.Tensor:
+        body_quat = self.asset.data.body_quat_w[:, self.body_id]
+        body_ang_vel_b = quat_rotate_inverse(
+            body_quat, self.asset.data.body_ang_vel_w[:, self.body_id]
+        )
+        pitch_rate = body_ang_vel_b[:, 1:2]
+        error = pitch_rate.square()
+        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+        active = (~self.command_manager.is_standing_env) & (~force_active)
+        return -error, active
+
+
+class root_pitch_exp(Reward[ImpedanceCommandManager]):
+    """Keep the CoM/root pitch near the small nominal walking lean."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        target_pitch: float = -0.03,
+        sigma: float = 0.10,
+        body_name: str = "torso_link",
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.body_id = self.asset.find_bodies(body_name, preserve_order=True)[0]
+        if len(self.body_id) != 1:
+            raise ValueError("root_pitch_exp requires exactly one body")
+        self.body_id = self.body_id[0]
+        self.target_pitch = float(target_pitch)
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("root_pitch_exp sigma must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        pitch = euler_from_quat(
+            self.asset.data.body_quat_w[:, self.body_id]
+        )[:, 1:2]
+        reward = torch.exp(-((pitch - self.target_pitch) / self.sigma).square())
+        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+        active = (~self.command_manager.is_standing_env) & (~force_active)
+        return reward, active
+
+
 class facet_command_linvel_x(Reward[ImpedanceCommandManager]):
     """Diagnostic: commanded forward velocity in the world frame (m/s)."""
 

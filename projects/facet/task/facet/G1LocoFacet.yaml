@@ -72,13 +72,13 @@ reward:
     impedance_pos: {weight: 0.75}
     # The previous run kept walking but retained roughly 0.29 m/s FACET
     # velocity error. Increase tracking pressure without changing the command.
-    impedance_vel: {weight: 1.25}
+    impedance_vel: {weight: 1.50}
     # Nominal walking anchor. It is disabled automatically while an external
     # impulse is active, preserving FACET's compliant response during tests.
-    facet_track_lin_vel: {weight: 1.0, sigma: 0.20}
+    facet_track_lin_vel: {weight: 1.50, sigma: 0.16}
     # Direct nominal CoM tracking prevents a low-speed shuffling solution;
     # FACET reference tracking remains active above it.
-    linvel_exp: {weight: 0.75, sigma: 0.20, dim: 2}
+    linvel_exp: {weight: 1.00, sigma: 0.16, dim: 2}
     # The last replay accumulated 3-4 rad of heading drift in each 20 s
     # episode despite a zero yaw command. Keep heading and yaw rate anchored
     # more strongly during nominal straight walking.
@@ -87,6 +87,16 @@ reward:
     # Measures torso pitch and roll directly through the body gravity vector.
     body_upright: {weight: 4.0, body_name: torso_link}
     root_upright: {weight: 0.75}
+    root_pitch_exp:
+      _target_: root_pitch_exp
+      weight: 1.20
+      target_pitch: -0.03
+      sigma: 0.10
+      body_name: torso_link
+    root_pitch_rate_l2:
+      _target_: root_pitch_rate_l2
+      weight: 0.35
+      body_name: torso_link
     base_height_exp: {weight: 1.8, target_height: 0.74}
     angvel_xy_l2: {weight: 0.40, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.5, gamma: 0.8}
@@ -197,19 +207,21 @@ reward:
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      # At 0.35 m/s this produces a short, recoverable step.
-      step_length_scale: 0.55
-      min_step_length: 0.08
-      max_step_length: 0.30
+      # At 0.35 m/s this targets about 0.27 m per foot step.
+      step_length_scale: 0.95
+      min_step_length: 0.12
+      # Keep headroom for the next 0.45-0.50 m/s curriculum stage.
+      max_step_length: 0.42
       velocity_sigma: 0.28
     biped_swing_foot_placement:
       weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
-      step_length_scale: 0.55
-      min_step_length: 0.06
-      max_step_length: 0.24
+      step_length_scale: 0.95
+      min_step_length: 0.10
+      # Do not clip the placement target when command speed is raised.
+      max_step_length: 0.40
       position_sigma: 0.10
     biped_stride_limit:
       weight: 0.75
@@ -226,11 +238,13 @@ reward:
       # The new replay improved the median signed gap to 9.8 cm and reduced
       # negative gaps below 1%, but mesh-vertex overlap flags remain in about
       # 11-13% of frames. Preserve foot ordering with additional width margin.
-      weight: 2.00
+      weight: 2.25
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       knee_body_names: ["left_knee_link", "right_knee_link"]
-      min_separation: 0.145
-      min_knee_separation: 0.10
+      # The previous replay had a 13.5 cm median foot-center gap.  A 17 cm
+      # signed minimum gives a visible but still recoverable walking width.
+      min_separation: 0.17
+      min_knee_separation: 0.11
       order_scale: 0.08
       max_separation: 0.28
       scale: 0.06
