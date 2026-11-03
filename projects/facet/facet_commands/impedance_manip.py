@@ -205,6 +205,7 @@ class ImpedanceCommandManager(Command):
         ref_steps=[8, 16, 32],
         temporal_smoothing: int=32,
         fixed_velocity: bool = False,
+        initial_yaw_range: Optional[Tuple[float, float]]=None,
         linvel_x_range=(-0.8, 1.4),
         linvel_y_range=(-0.8, 0.8),
         yawvel_range=(-2.0, 2.0),
@@ -235,6 +236,15 @@ class ImpedanceCommandManager(Command):
             raise ValueError(f"`ref_steps` must be less than or equal to `temporal_smoothing`")
         self.temporal_smoothing = temporal_smoothing
         self.fixed_velocity = fixed_velocity
+        self.initial_yaw_range = (
+            None if initial_yaw_range is None
+            else tuple(float(x) for x in initial_yaw_range)
+        )
+        if self.initial_yaw_range is not None and (
+            len(self.initial_yaw_range) != 2
+            or self.initial_yaw_range[0] > self.initial_yaw_range[1]
+        ):
+            raise ValueError("`initial_yaw_range` must be an ordered pair")
         self.linvel_x_range = tuple(float(x) for x in linvel_x_range)
         self.linvel_y_range = tuple(float(x) for x in linvel_y_range)
         self.yawvel_range = tuple(float(x) for x in yawvel_range)
@@ -255,7 +265,7 @@ class ImpedanceCommandManager(Command):
         ):
             if len(value) != 2 or value[0] > value[1]:
                 raise ValueError(f"`{name}` must be an ordered pair")
-        
+
         # currently hardcoded in the kernels
         # self.base_kp_range = (4., 40.)
         # self.eef_kp_range = (4., 40.)
@@ -319,6 +329,20 @@ class ImpedanceCommandManager(Command):
             self.setpoint_eef_marker = make_point_marker("setpoint_eef", (0.0, 0.8, 0.0))
             # self.spring_marker = make_point_marker("spring", (0.0, 0.0, 0.8))
             
+
+    def sample_init(self, env_ids: torch.Tensor):
+        if self.initial_yaw_range is None:
+            return super().sample_init(env_ids)
+
+        init_root_state = self.init_root_state[env_ids].clone()
+        init_root_state[:, :3] += self.env.scene.get_spawn_origins(env_ids)
+        yaw = torch.empty(len(env_ids), device=self.device).uniform_(
+            *self.initial_yaw_range
+        )
+        rpy = torch.zeros(len(env_ids), 3, device=self.device)
+        rpy[:, 2] = yaw
+        init_root_state[:, 3:7] = quat_from_euler_xyz(rpy)
+        return init_root_state
 
     def reference_dynamics(self, dt: float):
         base_pos_error = self.setpoint_w[:, None, :3] - self.pos_base.pos_w
