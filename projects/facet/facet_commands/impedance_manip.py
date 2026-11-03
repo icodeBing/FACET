@@ -137,6 +137,8 @@ def sample_command_world(
     seed: wp.int32,
     virtual_mass_range: wp.array(dtype=wp.float32),
     virtual_mass_range_len: wp.int32,
+    linear_kp_min: wp.float32,
+    linear_kp_max: wp.float32,
     # output
     setpoint_pos_w: wp.array(dtype=wp.vec3),
     setpoint_rpy_w: wp.array(dtype=wp.vec3),
@@ -150,7 +152,7 @@ def sample_command_world(
         return
 
     seed_ = wp.rand_init(seed, tid)
-    lin_kp = wp.randf(seed_, 2.0, 30.0)
+    lin_kp = wp.randf(seed_, linear_kp_min, linear_kp_max)
     lin_kd = 1.8 * wp.sqrt(lin_kp)
     ang_kp = lin_kp
     ang_kd = lin_kd
@@ -206,6 +208,7 @@ class ImpedanceCommandManager(Command):
         temporal_smoothing: int=32,
         fixed_velocity: bool = False,
         initial_yaw_range: Optional[Tuple[float, float]]=None,
+        linear_kp_range: Tuple[float, float]=(2.0, 30.0),
         linvel_x_range=(-0.8, 1.4),
         linvel_y_range=(-0.8, 0.8),
         yawvel_range=(-2.0, 2.0),
@@ -245,6 +248,13 @@ class ImpedanceCommandManager(Command):
             or self.initial_yaw_range[0] > self.initial_yaw_range[1]
         ):
             raise ValueError("`initial_yaw_range` must be an ordered pair")
+        self.linear_kp_range = tuple(float(x) for x in linear_kp_range)
+        if (
+            len(self.linear_kp_range) != 2
+            or self.linear_kp_range[0] <= 0.0
+            or self.linear_kp_range[0] > self.linear_kp_range[1]
+        ):
+            raise ValueError("`linear_kp_range` must be an ordered pair of positive values")
         self.linvel_x_range = tuple(float(x) for x in linvel_x_range)
         self.linvel_y_range = tuple(float(x) for x in linvel_y_range)
         self.yawvel_range = tuple(float(x) for x in yawvel_range)
@@ -266,12 +276,6 @@ class ImpedanceCommandManager(Command):
             if len(value) != 2 or value[0] > value[1]:
                 raise ValueError(f"`{name}` must be an ordered pair")
 
-        # currently hardcoded in the kernels
-        # self.base_kp_range = (4., 40.)
-        # self.eef_kp_range = (4., 40.)
-        # self.base_kp_range = (24., 60.)
-        # self.eef_kp_range = (24., 60.)
-        
         self.cmd = ImpedanceCommand.zero(self.num_envs, self.device)
         
         with torch.device(self.device):
@@ -520,6 +524,8 @@ class ImpedanceCommandManager(Command):
                 self.seed,
                 wp.from_torch(self.virtual_mass_range, dtype=wp.float32, return_ctype=True),
                 len(self.virtual_mass_range),
+                self.linear_kp_range[0],
+                self.linear_kp_range[1],
             ],
             outputs=[
                 wp.from_torch(self.setpoint_w[:, :3], dtype=wp.vec3, return_ctype=True),
@@ -550,6 +556,8 @@ class ImpedanceCommandManager(Command):
                 self.seed,
                 wp.from_torch(self.virtual_mass_range, dtype=wp.float32, return_ctype=True),
                 len(self.virtual_mass_range),
+                self.linear_kp_range[0],
+                self.linear_kp_range[1],
             ],
             outputs=[
                 wp.from_torch(self.setpoint_w[:, :3], dtype=wp.vec3, return_ctype=True),

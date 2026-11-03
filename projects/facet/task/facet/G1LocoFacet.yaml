@@ -37,6 +37,9 @@ observation:
 command:
   _target_: ImpedanceCommandManager
   virtual_mass_range: [2., 4., 8.]
+  # FACET reference-model stiffness range. Set both bounds equal during
+  # playback to compare a fixed impedance gain under matched disturbances.
+  linear_kp_range: [2., 30.]
   eef_body_name: null
   arm_body_name: null
   # Use the paper-scale preview and smoothing horizon.  A short [1,2,4]
