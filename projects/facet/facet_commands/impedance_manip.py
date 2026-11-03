@@ -712,10 +712,3 @@ class ImpedanceCommandManager(Command):
                 color=(0.0, 1.0, 0.0, 1.0),
                 size=5.0,
             )
-        # external forces
-        self.env.debug_draw.vector(
-            self.asset.data.root_com_pos_w,
-            self.force_impulse.get_force(None, None) / 9.81,
-            color=(1.0, 0.6, 0.0, 1.0), # orange
-            size=3.0,
-        )

@@ -510,18 +510,44 @@ class ComTrajectoryOverlay:
         self.asset = self.env.scene.articulations["robot"]
         self.reference_marker = self.env.scene.create_sphere_marker(
             "/Visuals/Play/FacetComReferencePreview",
-            color=(1.0, 0.55, 0.05),
+            color=(1.0, 0.0, 0.0),
             radius=0.018,
         )
+        self.force_marker = self.env.scene.create_arrow_marker(
+            "/Visuals/Play/AppliedDisturbanceForce",
+            color=(1.0, 0.0, 0.0),
+            # Runtime scales below control the arrow dimensions. Keep the
+            # marker prototype at unit scale to avoid multiplying thickness
+            # by 0.06 twice and making the arrow effectively invisible.
+            scale=(1.0, 1.0, 1.0),
+        )
+        self.force_marker.set_visibility(False)
         self.actual_marker = self.env.scene.create_sphere_marker(
             "/Visuals/Play/ActualComTrail",
             color=(0.05, 0.85, 1.0),
             radius=0.022,
         )
         print(
-            "CoM overlay enabled: orange=future FACET reference samples, "
-            "cyan=recent actual CoM trail; markers use their true world XYZ positions."
+            "CoM overlay enabled: red=future FACET reference samples, "
+            "cyan=recent actual CoM trail; red arrow=applied disturbance "
+            "at the robot root link."
         )
+
+    @staticmethod
+    def _x_axis_to_quaternion(direction: torch.Tensor) -> torch.Tensor:
+        """Return a wxyz quaternion rotating local +X onto a world direction."""
+        direction = direction / direction.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        x_axis = torch.zeros_like(direction)
+        x_axis[..., 0] = 1.0
+        cross = torch.cross(x_axis, direction, dim=-1)
+        dot = (x_axis * direction).sum(dim=-1, keepdim=True)
+        quat = torch.cat((1.0 + dot, cross), dim=-1)
+        opposite = dot.squeeze(-1) < -0.9999
+        if opposite.any():
+            quat[opposite] = torch.tensor(
+                [0.0, 0.0, 0.0, 1.0], device=quat.device, dtype=quat.dtype
+            )
+        return quat / quat.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
     def update(self, step: int):
         if not self.enabled:
@@ -546,6 +572,31 @@ class ComTrajectoryOverlay:
         self.actual_marker.visualize(
             translations=actual_trail
         )
+
+        force = self.command.force_impulse.get_force(None, None)[0].detach()
+        force_norm = force.norm()
+        if force_norm.item() > 1e-3:
+            self.force_marker.set_visibility(True)
+            force_direction = force.unsqueeze(0)
+            force_quat = self._x_axis_to_quaternion(force_direction)
+            # Keep moderate forces visible in the recorded camera view while
+            # preserving their direction and relative magnitude.
+            arrow_length = (force_norm / 50.0).clamp(0.25, 1.5)
+            arrow_scales = torch.stack(
+                (
+                    arrow_length,
+                    torch.full_like(arrow_length, 0.06),
+                    torch.full_like(arrow_length, 0.06),
+                ),
+                dim=-1,
+            ).unsqueeze(0)
+            self.force_marker.visualize(
+                translations=self.asset.data.root_link_pos_w[0:1].detach(),
+                orientations=force_quat,
+                scales=arrow_scales,
+            )
+        else:
+            self.force_marker.set_visibility(False)
 
 
 @VecNorm.freeze()
