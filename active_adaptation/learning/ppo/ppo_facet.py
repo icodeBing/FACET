@@ -397,6 +397,10 @@ class PPOPolicy(PPOBase):
         reward = tensordict[REWARD_KEY].sum(-1)
         tensordict["adv"] = normalize(tensordict["adv"], subtract_mean=True)
         train_in_keys = list(self.train_in_keys)
+        if self.cfg.phase == "finetune":
+            # Preserve the rollout state through field selection and shuffling
+            # so _update can reconstruct the student's recurrent predictions.
+            train_in_keys.append("adapt_hx")
         if self.cfg.symaug:
             # The mirrored sample needs its own probability under the rollout
             # policy. It is generally not equal to the original sample's
@@ -501,6 +505,14 @@ class PPOPolicy(PPOBase):
         elif self.cfg.phase == "finetune":
             actor = self.actor_student
             opt = self.opt_finetune
+            # Rollout-only predictions are stripped before transitions are
+            # stored. Recompute them from each sample's saved recurrent state
+            # so PPO evaluates the same student inputs used during collection.
+            with torch.no_grad():
+                predictions = tensordict.select("_obs_normed", "is_init", "adapt_hx")
+                self.adapt_ema(predictions)
+                tensordict["_priv_pred"] = predictions["_priv_pred"]
+                tensordict["ext_pred"] = predictions["ext_pred"]
 
         # Evaluate the collected action without sampling or overwriting it.
         dist = actor.get_dist(tensordict)

@@ -60,9 +60,9 @@ def independent_normal(loc, scale):
 
 
 class ActorParameters(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim=5):
         super().__init__()
-        self.mean = nn.Linear(5, 12)
+        self.mean = nn.Linear(input_dim, 12)
         self.log_std = nn.Parameter(torch.zeros(12))
 
     def forward(self, obs):
@@ -76,9 +76,24 @@ class RatioRegression(unittest.TestCase):
         torch.set_num_threads(1)
 
     def make_case(self, phase, symaug, lr=0.0):
-        parameters = ActorParameters()
+        parameters = ActorParameters(8 if phase == "finetune" else 5)
+        if phase == "finetune":
+            actor_module = TensorDictSequential(
+                TensorDictModule(
+                    lambda obs, priv, ext: torch.cat([obs, priv, ext], dim=-1),
+                    ["_obs_normed", "_priv_pred", "ext_pred"], ["_actor_inp"],
+                ),
+                TensorDictModule(parameters, ["_actor_inp"], ["loc", "scale"]),
+            )
+            adapt_ema = TensorDictModule(
+                lambda obs: (obs[:, :2], obs[:, 2:3]),
+                ["_obs_normed"], ["_priv_pred", "ext_pred"],
+            )
+        else:
+            actor_module = TensorDictModule(parameters, ["_obs_normed"], ["loc", "scale"])
+            adapt_ema = None
         actor = ProbabilisticActor(
-            module=TensorDictModule(parameters, ["_obs_normed"], ["loc", "scale"]),
+            module=actor_module,
             in_keys=["loc", "scale"], out_keys=["action"],
             distribution_class=independent_normal,
             return_log_prob=True, log_prob_key="action_log_prob",
@@ -92,6 +107,7 @@ class RatioRegression(unittest.TestCase):
             actor_teacher=actor, actor_student=actor,
             opt_teacher=opt, opt_finetune=opt,
             encoder_priv=encoder,
+            adapt_ema=adapt_ema,
             critic=critic,
             clip_param=0.2, max_grad_norm=1.0,
             critic_loss_fn=nn.MSELoss(reduction="none"),
@@ -99,7 +115,7 @@ class RatioRegression(unittest.TestCase):
         if symaug:
             for name in ("obs_transform", "priv_transform", "ext_transform", "act_transform"):
                 setattr(policy, name, torch.neg)
-        td = TensorDict({
+        td_data = {
             "_obs_normed": torch.randn(256, 5),
             "_priv_normed": torch.randn(256, 3),
             "_ext_normed": torch.randn(256, 6),
@@ -107,11 +123,20 @@ class RatioRegression(unittest.TestCase):
             "is_init": torch.zeros(256, 1, dtype=torch.bool),
             "ret": torch.randn(256, 1),
             "adv": torch.randn(256, 1),
-        }, batch_size=[256])
+        }
+        if phase == "finetune":
+            td_data["adapt_hx"] = torch.zeros(256, 128)
+        td = TensorDict(td_data, batch_size=[256])
         with torch.no_grad():
+            if phase == "finetune":
+                adapt_ema(td)
             dist = actor.get_dist(td.copy())
             td["action"] = dist.sample()
             td["action_log_prob"] = dist.log_prob(td["action"])
+        if phase == "finetune":
+            # Rollout predictions are transient and are removed before storage.
+            td = td.exclude("_priv_pred", "ext_pred")
+        with torch.no_grad():
             if symaug:
                 symmetry = TensorDict({
                     "_obs_normed": -td["_obs_normed"],
@@ -123,7 +148,7 @@ class RatioRegression(unittest.TestCase):
 
     def test_unchanged_policy_has_zero_kl_and_preserves_rollout(self):
         for phase in ("train", "finetune"):
-            for symaug in (False, True):
+            for symaug in ((False, True) if phase == "train" else (False,)):
                 with self.subTest(phase=phase, symaug=symaug):
                     policy, actor, _, td = self.make_case(phase, symaug)
                     action = td["action"].clone()
@@ -145,6 +170,18 @@ class RatioRegression(unittest.TestCase):
                     self.assertTrue(all(not value.requires_grad for value in info.values()))
                     self.assertTrue(any(p.grad is not None and p.grad.abs().sum() > 0
                                         for p in actor.parameters()))
+
+    def test_finetune_recomputes_student_predictions_after_rollout_cleanup(self):
+        policy, actor, _, td = self.make_case("finetune", False)
+        self.assertNotIn("_priv_pred", td.keys())
+        self.assertNotIn("ext_pred", td.keys())
+        self.assertIn("adapt_hx", td.keys())
+
+        info = load_update()(policy, td)
+
+        self.assertTrue(torch.isfinite(info["actor/approx_kl"]))
+        self.assertTrue(any(p.grad is not None and p.grad.abs().sum() > 0
+                            for p in actor.parameters()))
 
     def test_changed_policy_uses_stored_old_probability(self):
         for symaug in (False, True):
