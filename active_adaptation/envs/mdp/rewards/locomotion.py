@@ -647,7 +647,11 @@ class biped_swing_hip_flexion(Reward):
         )
         in_swing = swing_phase > 0.0
         hip = self.asset.data.joint_pos[:, self.hip_ids]
-        target = self.default + self.target_flexion * torch.sin(
+        # G1's positive body-x command uses a negative hip displacement for
+        # forward swing. Reverse that displacement for a negative command so
+        # the same phase schedule also produces a genuine backward gait.
+        direction = self.command_manager.cmd_linvel_b[:, 0:1].sign()
+        target = self.default + self.target_flexion * direction * torch.sin(
             torch.pi * swing_phase
         )
         reward = torch.exp(-((hip - target) / self.flexion_sigma).square())

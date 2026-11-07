@@ -210,9 +210,12 @@ class ImpedanceCommandManager(Command):
         initial_yaw_range: Optional[Tuple[float, float]]=None,
         linear_kp_range: Tuple[float, float]=(2.0, 30.0),
         linvel_x_range=(-0.8, 1.4),
+        backward_linvel_x_range=None,
+        backward_prob: float = 0.0,
         linvel_y_range=(-0.8, 0.8),
         yawvel_range=(-2.0, 2.0),
         stand_prob: float = 0.05,
+        stand_speed_threshold: float = 0.1,
         randomize_gait_phase: bool = False,
         disturbance_prob: float = 0.003,
         disturbance_force_x_range=(80.0, 200.0),
@@ -258,7 +261,35 @@ class ImpedanceCommandManager(Command):
         self.linvel_x_range = tuple(float(x) for x in linvel_x_range)
         self.linvel_y_range = tuple(float(x) for x in linvel_y_range)
         self.yawvel_range = tuple(float(x) for x in yawvel_range)
+        for name, value in (
+            ("linvel_x_range", self.linvel_x_range),
+            ("linvel_y_range", self.linvel_y_range),
+            ("yawvel_range", self.yawvel_range),
+        ):
+            if len(value) != 2 or value[0] > value[1]:
+                raise ValueError(f"`{name}` must be an ordered pair")
+        self.backward_linvel_x_range = (
+            None
+            if backward_linvel_x_range is None
+            else tuple(float(x) for x in backward_linvel_x_range)
+        )
+        if self.backward_linvel_x_range is not None and (
+            len(self.backward_linvel_x_range) != 2
+            or self.backward_linvel_x_range[0] > self.backward_linvel_x_range[1]
+            or self.backward_linvel_x_range[1] > 0.0
+        ):
+            raise ValueError(
+                "`backward_linvel_x_range` must be an ordered nonpositive pair"
+            )
+        self.backward_prob = float(backward_prob)
+        if not 0.0 <= self.backward_prob <= 1.0:
+            raise ValueError("`backward_prob` must be in [0, 1]")
         self.stand_prob = float(stand_prob)
+        self.stand_speed_threshold = float(stand_speed_threshold)
+        if not 0.0 <= self.stand_prob <= 1.0:
+            raise ValueError("`stand_prob` must be in [0, 1]")
+        if self.stand_speed_threshold < 0.0:
+            raise ValueError("`stand_speed_threshold` must be nonnegative")
         self.randomize_gait_phase = bool(randomize_gait_phase)
         if not 0.0 <= disturbance_prob <= 1.0:
             raise ValueError("`disturbance_prob` must be in [0, 1]")
@@ -655,10 +686,20 @@ class ImpedanceCommandManager(Command):
             return
         n = env_ids.numel()
         linvel_b = torch.zeros(n, 3, device=self.device)
-        linvel_b[:, 0].uniform_(*self.linvel_x_range)
+        forward_x = torch.empty(n, device=self.device).uniform_(*self.linvel_x_range)
+        if self.backward_linvel_x_range is not None and self.backward_prob > 0.0:
+            backward_x = torch.empty(n, device=self.device).uniform_(
+                *self.backward_linvel_x_range
+            )
+            use_backward = torch.rand(n, device=self.device) < self.backward_prob
+            linvel_b[:, 0] = torch.where(use_backward, backward_x, forward_x)
+        else:
+            linvel_b[:, 0] = forward_x
         linvel_b[:, 1].uniform_(*self.linvel_y_range)
         speed = linvel_b[:, :2].norm(dim=-1, keepdim=True)
-        standing = (speed < 0.1) | (torch.rand(n, 1, device=self.device) < self.stand_prob)
+        standing = (speed < self.stand_speed_threshold) | (
+            torch.rand(n, 1, device=self.device) < self.stand_prob
+        )
         linvel_b *= (~standing)
         self.cmd_linvel_b[env_ids] = linvel_b
         self.cmd_yawvel_b[env_ids, 0].uniform_(*self.yawvel_range)

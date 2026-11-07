@@ -189,6 +189,189 @@ class root_pitch_exp(Reward[ImpedanceCommandManager]):
         return reward, active
 
 
+class facet_stand_joint_posture(Reward[ImpedanceCommandManager]):
+    """Keep the legs near the asset's nominal upright pose while standing.
+
+    The locomotion terms are intentionally inactive for a zero-velocity
+    command. Without a leg-pose target, PPO can widen the hips to obtain a
+    large passive support polygon. The default joint pose is the same pose
+    used by the asset reset, so this term does not impose a new walking gait.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        joint_names,
+        sigma: float = 0.22,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        ids = self.asset.find_joints(joint_names, preserve_order=True)[0]
+        if not ids:
+            raise ValueError("facet_stand_joint_posture found no joints")
+        self.joint_ids = torch.tensor(ids, device=self.device)
+        self.default = self.asset.data.default_joint_pos[:, self.joint_ids].clone()
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("facet_stand_joint_posture sigma must be positive")
+
+    def _compute(self):
+        error = (self.asset.data.joint_pos[:, self.joint_ids] - self.default) / self.sigma
+        reward = torch.exp(-error.square().mean(dim=-1, keepdim=True))
+        return reward, self.command_manager.is_standing_env
+
+
+class facet_stand_foot_width(Reward[ImpedanceCommandManager]):
+    """Target a normal, fixed lateral foot separation during standing."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names,
+        target_separation: float = 0.23,
+        sigma: float = 0.04,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("facet_stand_foot_width requires two ordered feet")
+        self.foot_ids = torch.tensor(ids, device=self.device)
+        self.target_separation = float(target_separation)
+        self.sigma = float(sigma)
+        if self.target_separation <= 0.0 or self.sigma <= 0.0:
+            raise ValueError("invalid standing foot-width target or sigma")
+
+    def _compute(self):
+        root_pos = self.asset.data.root_link_pos_w
+        root_yaw = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        feet_pos_b = quat_rotate_inverse(
+            root_yaw,
+            self.asset.data.body_link_pos_w[:, self.foot_ids]
+            - root_pos.unsqueeze(1),
+        )
+        # Ordered left-minus-right separation is signed, preventing the policy
+        # from satisfying the target by crossing the feet.
+        separation = feet_pos_b[:, 0, 1] - feet_pos_b[:, 1, 1]
+        reward = torch.exp(-((separation - self.target_separation) / self.sigma).square())
+        return reward.unsqueeze(1), self.command_manager.is_standing_env
+
+
+class facet_stand_foot_pose(Reward[ImpedanceCommandManager]):
+    """Keep both feet parallel and aligned in the nominal standing pose.
+
+    A width-only target can still be satisfied by putting one foot in front of
+    the other.  The mean fore-aft target and the left/right stagger target are
+    expressed in the root yaw frame, so they remain valid when the episode
+    starts at a different heading.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names,
+        target_fore_aft: float = -0.026,
+        fore_aft_sigma: float = 0.05,
+        stagger_sigma: float = 0.04,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("facet_stand_foot_pose requires two ordered feet")
+        self.foot_ids = torch.tensor(ids, device=self.device)
+        self.target_fore_aft = float(target_fore_aft)
+        self.fore_aft_sigma = float(fore_aft_sigma)
+        self.stagger_sigma = float(stagger_sigma)
+        if self.fore_aft_sigma <= 0.0 or self.stagger_sigma <= 0.0:
+            raise ValueError("standing foot-pose sigmas must be positive")
+
+    def _compute(self):
+        root_pos = self.asset.data.root_link_pos_w
+        root_yaw = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        feet_pos_b = quat_rotate_inverse(
+            root_yaw,
+            self.asset.data.body_link_pos_w[:, self.foot_ids]
+            - root_pos.unsqueeze(1),
+        )
+        fore_aft_mean = feet_pos_b[:, :, 0].mean(dim=1)
+        fore_aft_stagger = feet_pos_b[:, 0, 0] - feet_pos_b[:, 1, 0]
+        error = (
+            ((fore_aft_mean - self.target_fore_aft) / self.fore_aft_sigma).square()
+            + (fore_aft_stagger / self.stagger_sigma).square()
+        )
+        reward = torch.exp(-error).unsqueeze(1)
+        return reward, self.command_manager.is_standing_env
+
+
+class facet_stand_foot_contact(Reward[ImpedanceCommandManager]):
+    """Require both feet to remain in contact for a standing command."""
+
+    def __init__(self, env, weight: float, body_names):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.contact_sensor = self.env.scene.sensors["contact_forces"]
+        ids = self.contact_sensor.find_bodies(body_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("facet_stand_foot_contact requires two ordered feet")
+        self.contact_ids = torch.tensor(ids, device=self.device)
+
+    def _compute(self):
+        contact = (
+            self.contact_sensor.data.current_contact_time[:, self.contact_ids] > 0.0
+        )
+        reward = contact.float().mean(dim=-1, keepdim=True)
+        return reward, self.command_manager.is_standing_env
+
+
+class facet_stand_foot_velocity(Reward[ImpedanceCommandManager]):
+    """Suppress foot shuffling while the command asks for a stand."""
+
+    def __init__(self, env, weight: float, body_names, sigma: float = 0.08):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        if len(ids) != 2:
+            raise ValueError("facet_stand_foot_velocity requires two ordered feet")
+        self.foot_ids = torch.tensor(ids, device=self.device)
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("facet_stand_foot_velocity sigma must be positive")
+
+    def _compute(self):
+        velocity = self.asset.data.body_lin_vel_w[:, self.foot_ids, :2]
+        reward = torch.exp(-(velocity.norm(dim=-1).square() / self.sigma**2))
+        reward = reward.amin(dim=-1, keepdim=True)
+        return reward, self.command_manager.is_standing_env
+
+
+class facet_stand_root_motion(Reward[ImpedanceCommandManager]):
+    """Keep the CoM and torso quiet for an explicit zero-velocity command."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        linear_sigma: float = 0.08,
+        angular_sigma: float = 0.20,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.linear_sigma = float(linear_sigma)
+        self.angular_sigma = float(angular_sigma)
+        if self.linear_sigma <= 0.0 or self.angular_sigma <= 0.0:
+            raise ValueError("standing motion sigmas must be positive")
+
+    def _compute(self):
+        linear = self.asset.data.root_com_lin_vel_b[:, :2] / self.linear_sigma
+        angular = self.asset.data.root_com_ang_vel_b[:, :2] / self.angular_sigma
+        reward = torch.exp(-(linear.square().sum(-1, keepdim=True) + angular.square().sum(-1, keepdim=True)))
+        return reward, self.command_manager.is_standing_env
+
+
 class facet_command_linvel_x(Reward[ImpedanceCommandManager]):
     """Diagnostic: commanded forward velocity in the world frame (m/s)."""
 

@@ -48,12 +48,20 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  # Start with a conservative walking speed while the official-style gait
-  # stabilizes. Increase to 0.6-0.9 only after the feet show clean cycles.
+  # Preserve the validated +0.35 m/s forward distribution. Backward commands
+  # are sampled by a separate low-probability branch so this curriculum does
+  # not halve the forward samples when continuing from the stage1 checkpoint.
   linvel_x_range: [0.35, 0.35]
+  backward_linvel_x_range: [-0.35, -0.35]
+  backward_prob: 0.15
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
-  stand_prob: 0.0
+  # A small stand mixture teaches recovery and the zero-velocity pose while
+  # leaving most samples available for the existing forward gait.
+  stand_prob: 0.05
+  # Keep the near-zero dead zone narrow so only an explicit stand sample is
+  # classified as standing; this preserves the validated walking distribution.
+  stand_speed_threshold: 0.02
   # The released Unitree gait reward uses a fixed episode phase. Keep the
   # target observable and avoid adding a second source of phase variation.
   randomize_gait_phase: true
@@ -101,6 +109,48 @@ reward:
       weight: 0.35
       body_name: torso_link
     base_height_exp: {weight: 1.8, target_height: 0.74}
+    # Standing-only terms. They are gated by is_standing_env and therefore do
+    # not alter the existing positive/negative walking objective.
+    facet_stand_joint_posture:
+      _target_: facet_stand_joint_posture
+      weight: 1.00
+      joint_names:
+        - ".*hip_pitch_joint"
+        - ".*hip_roll_joint"
+        - ".*hip_yaw_joint"
+        - ".*knee_joint"
+        - ".*ankle_pitch_joint"
+        - ".*ankle_roll_joint"
+      sigma: 0.22
+    facet_stand_foot_width:
+      _target_: facet_stand_foot_width
+      weight: 1.25
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      # The nominal G1 reset pose is about 0.237 m between ankle centers.
+      target_separation: 0.23
+      sigma: 0.04
+    facet_stand_foot_pose:
+      _target_: facet_stand_foot_pose
+      weight: 0.90
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      # Measured from the pelvis root in the G1 default reset pose.
+      target_fore_aft: -0.026
+      fore_aft_sigma: 0.05
+      stagger_sigma: 0.04
+    facet_stand_foot_contact:
+      _target_: facet_stand_foot_contact
+      weight: 0.80
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+    facet_stand_foot_velocity:
+      _target_: facet_stand_foot_velocity
+      weight: 0.50
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      sigma: 0.08
+    facet_stand_root_motion:
+      _target_: facet_stand_root_motion
+      weight: 0.80
+      linear_sigma: 0.08
+      angular_sigma: 0.20
     angvel_xy_l2: {weight: 0.40, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.5, gamma: 0.8}
     root_yaw_rate_l2: {weight: 0.80}
