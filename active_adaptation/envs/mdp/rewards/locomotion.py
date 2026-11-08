@@ -376,18 +376,64 @@ class biped_alternating_contact(Reward):
         _, is_stance, _ = _biped_gait_phase(
             self.env, self.period, self.threshold
         )
-        # Score each foot separately, but distinguish the two failure modes
-        # that previously had the same score as a valid alternating gait:
-        # dropping the scheduled stance foot and keeping the swing foot down.
-        # A valid pattern scores 2, while either missing support or double
-        # support is reduced to 0.5. This removes the stationary double-contact
-        # local optimum without requiring strict single-support at every step.
-        stance_miss = (is_stance & ~contact).float()
-        swing_contact = ((~is_stance) & contact).float()
-        reward = (
-            (is_stance == contact).float()
-            - 0.5 * (stance_miss + swing_contact)
-        ).sum(dim=1, keepdim=True)
+        # Score each foot independently. A scheduled stance contact and a
+        # scheduled swing release are both valid; double support is tolerated
+        # briefly, while losing the support foot is worse than keeping the
+        # swing foot down. This preserves the official G1 soft gait target
+        # without rewarding a permanently planted leg.
+        stance_contact = is_stance & contact
+        stance_miss = is_stance & ~contact
+        reward_per_foot = torch.where(
+            stance_contact | ((~is_stance) & ~contact),
+            torch.ones_like(contact, dtype=torch.float32),
+            torch.where(stance_miss, -torch.ones_like(contact, dtype=torch.float32),
+                        -0.5 * torch.ones_like(contact, dtype=torch.float32)),
+        )
+        reward = reward_per_foot.sum(dim=1, keepdim=True)
+        active = ~self.command_manager.is_standing_env
+        return reward, active.reshape(self.num_envs, 1)
+
+
+class biped_air_time_target(Reward):
+    """Reward both feet for completing a real swing interval.
+
+    The phase/contact term alone can be satisfied by leaving one foot down if
+    its negative mismatch is outweighed by the other rewards.  This event term
+    gives each foot an independent touchdown signal and makes the observed
+    one-foot-support solution strictly less attractive.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names: Names,
+        period: float = 0.8,
+        stance_ratio: float = 0.55,
+        target_sigma: float = 0.12,
+    ):
+        super().__init__(env, weight)
+        self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
+        self.contact_ids = self.contact_sensor.find_bodies(
+            body_names, preserve_order=True
+        )[0]
+        if len(self.contact_ids) != 2:
+            raise ValueError("biped_air_time_target requires exactly two feet")
+        self.contact_ids = torch.tensor(self.contact_ids, device=self.device)
+        self.target_air_time = float(period) * (1.0 - float(stance_ratio))
+        self.target_sigma = float(target_sigma)
+        if self.target_air_time <= 0.0 or self.target_sigma <= 0.0:
+            raise ValueError("air-time target and sigma must be positive")
+
+    def _compute(self) -> torch.Tensor:
+        first_contact = self.contact_sensor.compute_first_contact(self.env.step_dt)[
+            :, self.contact_ids
+        ]
+        last_air_time = self.contact_sensor.data.last_air_time[:, self.contact_ids]
+        event_reward = torch.exp(
+            -((last_air_time - self.target_air_time) / self.target_sigma).square()
+        ) * first_contact.float()
+        reward = event_reward.sum(dim=1, keepdim=True)
         active = ~self.command_manager.is_standing_env
         return reward, active.reshape(self.num_envs, 1)
 

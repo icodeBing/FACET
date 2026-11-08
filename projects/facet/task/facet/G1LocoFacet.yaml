@@ -61,6 +61,8 @@ command:
   # facet_track_lin_vel has weight 1.5; 1.2 is 80% of its maximum.
   velocity_curriculum_tracking_threshold: 1.2
   velocity_curriculum_step: 0.0025
+  # Complete forward speed expansion before introducing backward/standing commands.
+  velocity_curriculum_extra_step: 0.005
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   # Add explicit standing only after the initial forward gait has had time to
@@ -309,10 +311,18 @@ reward:
       max_separation: 0.28
       scale: 0.06
     biped_alternating_contact:
-      weight: 2.5
+      weight: 3.5
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       threshold: 0.55
+    biped_air_time_target:
+      # Each foot must periodically leave and return; this breaks the
+      # right-foot-stays-down solution seen in the 0.2 m/s replay.
+      weight: 1.0
+      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
+      period: 0.8
+      stance_ratio: 0.55
+      target_sigma: 0.12
 
     # Per-foot and root telemetry. These terms are computed and logged but do
     # not enter the optimization objective.
@@ -368,7 +378,9 @@ reward:
     # A 0.8 s cycle with 55% stance leaves about 0.36 s for swing. The
     # inherited 0.5 s minimum-air-time penalty contradicted that phase target.
     feet_air_time:
-      weight: 1.5
+      # Unitree's G1 gait combines phase contact, clearance and air-time terms.
+      # This sparse touchdown term discourages the observed near-zero right-foot flight.
+      weight: 2.0
       body_names: ".*ankle_roll_link"
       thres: 0.25
     feet_sliding:
@@ -389,13 +401,13 @@ reward:
       joint_names: [".*ankle_pitch_joint", ".*ankle_roll_joint"]
     joint_vel_l2_ankle:
       _target_: joint_vel_l2
-      weight: 0.02
+      weight: 0.005
       joint_names: [".*ankle_pitch_joint", ".*ankle_roll_joint"]
     # Mild whole-leg damping suppresses high-frequency knee/hip/ankle chatter
     # without removing the phase-shaped swing excursion.
     joint_vel_l2_legs:
       _target_: joint_vel_l2
-      weight: 0.003
+      weight: 0.001
       joint_names:
         - ".*hip_pitch_joint"
         - ".*hip_roll_joint"
@@ -405,7 +417,8 @@ reward:
         - ".*ankle_roll_joint"
     joint_acc_l2_legs:
       _target_: joint_acc_l2
-      weight: 1.0e-5
+      # Unitree G1 uses 2.5e-7 globally; 1e-5 suppressed leg swing in this task.
+      weight: 2.5e-7
       joint_names:
         - ".*hip_pitch_joint"
         - ".*hip_roll_joint"

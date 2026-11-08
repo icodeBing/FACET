@@ -218,6 +218,7 @@ class ImpedanceCommandManager(Command):
         velocity_curriculum_initial_stand_prob: float = 0.0,
         velocity_curriculum_tracking_threshold: float = 1.2,
         velocity_curriculum_step: float = 0.0025,
+        velocity_curriculum_extra_step: float = 0.005,
         linvel_y_range=(-0.8, 0.8),
         yawvel_range=(-2.0, 2.0),
         stand_prob: float = 0.05,
@@ -315,6 +316,7 @@ class ImpedanceCommandManager(Command):
         )
         self.velocity_curriculum_step = float(velocity_curriculum_step)
         self.velocity_curriculum_progress = 0.0
+        self.velocity_curriculum_extra_progress = 0.0
         for name, value in (
             ("velocity_curriculum_initial_backward_prob", self.velocity_curriculum_initial_backward_prob),
             ("velocity_curriculum_initial_stand_prob", self.velocity_curriculum_initial_stand_prob),
@@ -325,6 +327,9 @@ class ImpedanceCommandManager(Command):
             raise ValueError("`velocity_curriculum_tracking_threshold` must be nonnegative")
         if not 0.0 < self.velocity_curriculum_step <= 1.0:
             raise ValueError("`velocity_curriculum_step` must be in (0, 1]")
+        if not 0.0 < velocity_curriculum_extra_step <= 1.0:
+            raise ValueError("`velocity_curriculum_extra_step` must be in (0, 1]")
+        self.velocity_curriculum_extra_step = float(velocity_curriculum_extra_step)
         self.stand_speed_threshold = float(stand_speed_threshold)
         if not 0.0 <= self.stand_prob <= 1.0:
             raise ValueError("`stand_prob` must be in [0, 1]")
@@ -729,6 +734,9 @@ class ImpedanceCommandManager(Command):
         curriculum_progress = (
             self.velocity_curriculum_progress if self.velocity_curriculum else 1.0
         )
+        extra_progress = (
+            self.velocity_curriculum_extra_progress if self.velocity_curriculum else 1.0
+        )
         if self.velocity_curriculum:
             initial_min, initial_max = self.velocity_curriculum_initial_x_range
             x_range = (
@@ -737,12 +745,12 @@ class ImpedanceCommandManager(Command):
             )
             backward_prob = (
                 self.velocity_curriculum_initial_backward_prob
-                + curriculum_progress
+                + extra_progress
                 * (self.backward_prob - self.velocity_curriculum_initial_backward_prob)
             )
             stand_prob = (
                 self.velocity_curriculum_initial_stand_prob
-                + curriculum_progress
+                + extra_progress
                 * (self.stand_prob - self.velocity_curriculum_initial_stand_prob)
             )
         else:
@@ -777,6 +785,12 @@ class ImpedanceCommandManager(Command):
         self.env.extra["curriculum/progress"] = torch.tensor(
             curriculum_progress, device=self.device
         )
+        self.env.extra["curriculum/forward_progress"] = torch.tensor(
+            curriculum_progress, device=self.device
+        )
+        self.env.extra["curriculum/extra_progress"] = torch.tensor(
+            extra_progress, device=self.device
+        )
         self.env.extra["curriculum/forward_x_min"] = torch.tensor(
             x_range[0], device=self.device
         )
@@ -804,14 +818,28 @@ class ImpedanceCommandManager(Command):
             tracking_score is not None
             and tracking_score >= self.velocity_curriculum_tracking_threshold
         ):
-            self.velocity_curriculum_progress = min(
-                1.0, self.velocity_curriculum_progress + self.velocity_curriculum_step
-            )
+            if self.velocity_curriculum_progress < 1.0:
+                self.velocity_curriculum_progress = min(
+                    1.0,
+                    self.velocity_curriculum_progress + self.velocity_curriculum_step,
+                )
+            else:
+                self.velocity_curriculum_extra_progress = min(
+                    1.0,
+                    self.velocity_curriculum_extra_progress
+                    + self.velocity_curriculum_extra_step,
+                )
         self.env.extra["curriculum/training_progress"] = torch.tensor(
             progress, device=self.device
         )
         self.env.extra["curriculum/progress"] = torch.tensor(
             self.velocity_curriculum_progress, device=self.device
+        )
+        self.env.extra["curriculum/forward_progress"] = torch.tensor(
+            self.velocity_curriculum_progress, device=self.device
+        )
+        self.env.extra["curriculum/extra_progress"] = torch.tensor(
+            self.velocity_curriculum_extra_progress, device=self.device
         )
         self.env.extra["curriculum/tracking_score"] = torch.tensor(
             0.0 if tracking_score is None else tracking_score,
