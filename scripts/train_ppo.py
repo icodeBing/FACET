@@ -231,6 +231,14 @@ def main(cfg: DictConfig):
             info["performance/training_time"] = training_time
             info["performance/iter_time"] = time.perf_counter() - rollout_start
 
+            # ``env.extra`` stores curriculum diagnostics as scalar tensors.
+            # Convert those values before the console/YAML print below; the
+            # old ``isinstance(v, (float, int))`` filter silently omitted them
+            # from ``2>&1 | tee`` logs even though the environment updated them.
+            for key, value in list(info.items()):
+                if isinstance(value, torch.Tensor) and value.numel() == 1:
+                    info[key] = value.detach().cpu().item()
+
             if should_save(i):
                 should_upload = i % upload_interval == 0
                 checkpoint_name = f"checkpoint_{i}" if should_upload else "checkpoint_temp"
