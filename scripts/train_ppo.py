@@ -179,6 +179,7 @@ def main(cfg: DictConfig):
         else:
             progress = range(total_iters)
 
+        tracking_score = None
         for i in progress:
             rollout_start = time.perf_counter()
             with ScopedTimer("rollout") as rollout_timer:
@@ -214,6 +215,10 @@ def main(cfg: DictConfig):
 
             info.update(env.extra)
             info.update(env.stats_ema)  # step-wise exponential moving average of stats
+
+            tracking_score = info.get("reward.loco/facet_track_lin_vel")
+            env.set_progress(i / max(total_iters - 1, 1), tracking_score)
+            info.update(env.extra)
 
             if hasattr(policy, "step_schedule"):
                 policy.step_schedule(i / total_iters)

@@ -212,6 +212,12 @@ class ImpedanceCommandManager(Command):
         linvel_x_range=(-0.8, 1.4),
         backward_linvel_x_range=None,
         backward_prob: float = 0.0,
+        velocity_curriculum: bool = False,
+        velocity_curriculum_initial_x_range: Tuple[float, float] = (0.2, 0.35),
+        velocity_curriculum_initial_backward_prob: float = 0.0,
+        velocity_curriculum_initial_stand_prob: float = 0.0,
+        velocity_curriculum_tracking_threshold: float = 1.2,
+        velocity_curriculum_step: float = 0.0025,
         linvel_y_range=(-0.8, 0.8),
         yawvel_range=(-2.0, 2.0),
         stand_prob: float = 0.05,
@@ -285,6 +291,40 @@ class ImpedanceCommandManager(Command):
         if not 0.0 <= self.backward_prob <= 1.0:
             raise ValueError("`backward_prob` must be in [0, 1]")
         self.stand_prob = float(stand_prob)
+        self.velocity_curriculum = bool(velocity_curriculum)
+        self.velocity_curriculum_initial_x_range = tuple(
+            float(x) for x in velocity_curriculum_initial_x_range
+        )
+        if (
+            len(self.velocity_curriculum_initial_x_range) != 2
+            or self.velocity_curriculum_initial_x_range[0]
+            > self.velocity_curriculum_initial_x_range[1]
+            or self.velocity_curriculum_initial_x_range[0] < 0.0
+        ):
+            raise ValueError(
+                "`velocity_curriculum_initial_x_range` must be an ordered nonnegative pair"
+            )
+        self.velocity_curriculum_initial_backward_prob = float(
+            velocity_curriculum_initial_backward_prob
+        )
+        self.velocity_curriculum_initial_stand_prob = float(
+            velocity_curriculum_initial_stand_prob
+        )
+        self.velocity_curriculum_tracking_threshold = float(
+            velocity_curriculum_tracking_threshold
+        )
+        self.velocity_curriculum_step = float(velocity_curriculum_step)
+        self.velocity_curriculum_progress = 0.0
+        for name, value in (
+            ("velocity_curriculum_initial_backward_prob", self.velocity_curriculum_initial_backward_prob),
+            ("velocity_curriculum_initial_stand_prob", self.velocity_curriculum_initial_stand_prob),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"`{name}` must be in [0, 1]")
+        if self.velocity_curriculum_tracking_threshold < 0.0:
+            raise ValueError("`velocity_curriculum_tracking_threshold` must be nonnegative")
+        if not 0.0 < self.velocity_curriculum_step <= 1.0:
+            raise ValueError("`velocity_curriculum_step` must be in (0, 1]")
         self.stand_speed_threshold = float(stand_speed_threshold)
         if not 0.0 <= self.stand_prob <= 1.0:
             raise ValueError("`stand_prob` must be in [0, 1]")
@@ -686,19 +726,43 @@ class ImpedanceCommandManager(Command):
             return
         n = env_ids.numel()
         linvel_b = torch.zeros(n, 3, device=self.device)
-        forward_x = torch.empty(n, device=self.device).uniform_(*self.linvel_x_range)
-        if self.backward_linvel_x_range is not None and self.backward_prob > 0.0:
+        curriculum_progress = (
+            self.velocity_curriculum_progress if self.velocity_curriculum else 1.0
+        )
+        if self.velocity_curriculum:
+            initial_min, initial_max = self.velocity_curriculum_initial_x_range
+            x_range = (
+                initial_min + curriculum_progress * (self.linvel_x_range[0] - initial_min),
+                initial_max + curriculum_progress * (self.linvel_x_range[1] - initial_max),
+            )
+            backward_prob = (
+                self.velocity_curriculum_initial_backward_prob
+                + curriculum_progress
+                * (self.backward_prob - self.velocity_curriculum_initial_backward_prob)
+            )
+            stand_prob = (
+                self.velocity_curriculum_initial_stand_prob
+                + curriculum_progress
+                * (self.stand_prob - self.velocity_curriculum_initial_stand_prob)
+            )
+        else:
+            x_range = self.linvel_x_range
+            backward_prob = self.backward_prob
+            stand_prob = self.stand_prob
+
+        forward_x = torch.empty(n, device=self.device).uniform_(*x_range)
+        if self.backward_linvel_x_range is not None and backward_prob > 0.0:
             backward_x = torch.empty(n, device=self.device).uniform_(
                 *self.backward_linvel_x_range
             )
-            use_backward = torch.rand(n, device=self.device) < self.backward_prob
+            use_backward = torch.rand(n, device=self.device) < backward_prob
             linvel_b[:, 0] = torch.where(use_backward, backward_x, forward_x)
         else:
             linvel_b[:, 0] = forward_x
         linvel_b[:, 1].uniform_(*self.linvel_y_range)
         speed = linvel_b[:, :2].norm(dim=-1, keepdim=True)
         standing = (speed < self.stand_speed_threshold) | (
-            torch.rand(n, 1, device=self.device) < self.stand_prob
+            torch.rand(n, 1, device=self.device) < stand_prob
         )
         linvel_b *= (~standing)
         self.cmd_linvel_b[env_ids] = linvel_b
@@ -709,6 +773,50 @@ class ImpedanceCommandManager(Command):
         self.is_standing_env[env_ids] = standing
         self.command_speed[env_ids] = linvel_b[:, :2].norm(dim=-1, keepdim=True)
         self.cmd_base_height[env_ids] = 0.74
+
+        self.env.extra["curriculum/progress"] = torch.tensor(
+            curriculum_progress, device=self.device
+        )
+        self.env.extra["curriculum/forward_x_min"] = torch.tensor(
+            x_range[0], device=self.device
+        )
+        self.env.extra["curriculum/forward_x_max"] = torch.tensor(
+            x_range[1], device=self.device
+        )
+        self.env.extra["curriculum/backward_prob"] = torch.tensor(
+            backward_prob, device=self.device
+        )
+        self.env.extra["curriculum/stand_prob"] = torch.tensor(
+            stand_prob, device=self.device
+        )
+        self.env.extra["command/standing_fraction"] = self.is_standing_env.float().mean()
+        self.env.extra["command/backward_fraction"] = (
+            self.cmd_linvel_b[:, 0:1] < -self.stand_speed_threshold
+        ).float().mean()
+        self.env.extra["command/forward_fraction"] = (
+            self.cmd_linvel_b[:, 0:1] > self.stand_speed_threshold
+        ).float().mean()
+
+    def update_curriculum(self, progress: float, tracking_score: float | None):
+        if not self.velocity_curriculum:
+            return
+        if (
+            tracking_score is not None
+            and tracking_score >= self.velocity_curriculum_tracking_threshold
+        ):
+            self.velocity_curriculum_progress = min(
+                1.0, self.velocity_curriculum_progress + self.velocity_curriculum_step
+            )
+        self.env.extra["curriculum/training_progress"] = torch.tensor(
+            progress, device=self.device
+        )
+        self.env.extra["curriculum/progress"] = torch.tensor(
+            self.velocity_curriculum_progress, device=self.device
+        )
+        self.env.extra["curriculum/tracking_score"] = torch.tensor(
+            0.0 if tracking_score is None else tracking_score,
+            device=self.device,
+        )
 
     def _set_velocity_target(self, env_ids: torch.Tensor):
         """Convert target velocities to impedance setpoints (paper Eq. 2 setup)."""

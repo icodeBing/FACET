@@ -372,8 +372,11 @@ class _EnvBase(EnvBase, RegistryMixin):
     # ---------------------------------------------------------------------
     # Runtime helpers
     # ---------------------------------------------------------------------
-    def set_progress(self, progress: int):
+    def set_progress(self, progress: float, tracking_score: float | None = None):
         self.current_iter = progress
+        update_curriculum = getattr(self.command_manager, "update_curriculum", None)
+        if update_curriculum is not None:
+            update_curriculum(progress, tracking_score)
 
     @property
     def num_envs(self) -> int:

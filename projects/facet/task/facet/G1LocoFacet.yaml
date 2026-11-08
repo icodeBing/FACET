@@ -1,5 +1,5 @@
 # @package task
-# FACET impedance tracking with the validated G1 locomotion objective.
+# FACET impedance tracking with a from-scratch G1 locomotion curriculum.
 defaults:
   - /task/facet/G1Force@_here_
   - _self_
@@ -48,16 +48,23 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  # Preserve the validated +0.35 m/s forward distribution. Backward commands
-  # are sampled by a separate low-probability branch so this curriculum does
-  # not halve the forward samples when continuing from the stage1 checkpoint.
-  linvel_x_range: [0.35, 0.35]
-  backward_linvel_x_range: [-0.35, -0.35]
+  # Start from low positive speed with only forward commands. Expand speed and
+  # introduce reverse/stand commands only after nominal FACET velocity tracking
+  # reaches 80% of its maximum reward, following Unitree's reward-gated curriculum.
+  linvel_x_range: [0.20, 0.90]
+  backward_linvel_x_range: [-0.50, -0.20]
   backward_prob: 0.15
+  velocity_curriculum: true
+  velocity_curriculum_initial_x_range: [0.20, 0.35]
+  velocity_curriculum_initial_backward_prob: 0.0
+  velocity_curriculum_initial_stand_prob: 0.0
+  # facet_track_lin_vel has weight 1.5; 1.2 is 80% of its maximum.
+  velocity_curriculum_tracking_threshold: 1.2
+  velocity_curriculum_step: 0.0025
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
-  # A small stand mixture teaches recovery and the zero-velocity pose while
-  # leaving most samples available for the existing forward gait.
+  # Add explicit standing only after the initial forward gait has had time to
+  # form. Keep the final stand share small so it cannot dominate locomotion.
   stand_prob: 0.05
   # Keep the near-zero dead zone narrow so only an explicit stand sample is
   # classified as standing; this preserves the validated walking distribution.
