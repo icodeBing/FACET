@@ -15,6 +15,8 @@ class crash(Termination):
     Hard termination given by undesired contact forces on the specified body names.
     """
 
+    supported_backends = ("isaac", "mjlab")
+
     def __init__(self, env, body_names_expr: str, t_thres: float = 0.0):
         super().__init__(env)
         self.t_thres = t_thres

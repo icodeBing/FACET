@@ -139,7 +139,7 @@ class feet_lateral_separation(Reward):
 
 
 class feet_sliding(Reward):
-    supported_backends = ("isaac",)
+    supported_backends = ("isaac", "mjlab")
     def __init__(self, env, body_names: str, weight: float):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]

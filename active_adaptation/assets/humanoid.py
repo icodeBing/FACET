@@ -186,6 +186,12 @@ G1_WAIST_UNLOCKED_CFG = AssetCfg( # no wrist pitch and yaw
             name="contact_forces",
             primary=".*",
             secondary=[],
+            primary_contact_match_mode="body",
+            primary_contact_match_pattern=".*",
+            primary_contact_match_entity="robot",
+            secondary_contact_match_mode="geom",
+            secondary_contact_match_pattern=".*",
+            secondary_contact_match_entity="terrain",
             track_air_time=True,
             history_length=3
         ),

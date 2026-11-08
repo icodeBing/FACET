@@ -4,13 +4,13 @@ import einops
 
 from active_adaptation.envs.mdp.commands.base import Command
 from active_adaptation.envs.mdp.commands.locomotion import Twist
-import isaaclab.utils.math as math_utils
 from active_adaptation.utils.math import (
     yaw_rotate, clamp_along, clamp_norm,
     quat_rotate, quat_rotate_inverse,
     quat_from_euler_xyz,
     yaw_quat,
-    EMA
+    EMA,
+    wrap_to_pi,
 )
 from active_adaptation.envs.mdp.utils.forces import ConstantForce, ImpulseForce, SpringForce
 import active_adaptation.utils.symmetry as symmetry_utils
@@ -287,7 +287,7 @@ class Impedance(Command):
         )
         yaw_diff = self.command_setrpy_w[:, 2:3].unsqueeze(1) - self.ref_yaw_w
         ref_yaw_acc_w = (
-            self.ang_kp.unsqueeze(1) * math_utils.wrap_to_pi(yaw_diff)
+            self.ang_kp.unsqueeze(1) * wrap_to_pi(yaw_diff)
             + self.ang_kd.unsqueeze(1) * (0.0 - self.ref_yaw_vel_w)
             + torque[:, :, 2:3]
         ) / self.virtual_inertia[:, 2:3].unsqueeze(1)
@@ -329,7 +329,7 @@ class Impedance(Command):
         self.command_speed[:] = self.command_linvel.norm(dim=-1, keepdim=True)
         self.is_standing_env[:] = False #(self.command_speed < 0.1) & (self.command_angvel.abs() < 0.1).unsqueeze(1)
 
-        yaw_diff = math_utils.wrap_to_pi(self.command_setrpy_w[:, 2] - yaw)
+        yaw_diff = wrap_to_pi(self.command_setrpy_w[:, 2] - yaw)
 
         self.command[:, :2] = command_setpos_b[:, :2]
         self.command[:, 2] = yaw_diff
@@ -353,7 +353,7 @@ class Impedance(Command):
                 self.asset.data.root_quat_w.unsqueeze(1),
                 self.surr_lin_vel_target).reshape(self.num_envs, -1),
             self.surr_yaw_vel_target.reshape(self.num_envs, -1),
-            math_utils.wrap_to_pi(self.surr_yaw_target.squeeze(-1) - yaw.unsqueeze(1))
+            wrap_to_pi(self.surr_yaw_target.squeeze(-1) - yaw.unsqueeze(1))
         ], dim=1)
         
         self.update_command()
@@ -471,7 +471,7 @@ class Impedance(Command):
         self.set_linvel[env_ids] = 0.
         self.command_setpos_w[env_ids] = self.asset.data.root_pos_w[env_ids] + offset
         target_yaw = self.asset.data.heading_w[env_ids, None] + scalar.uniform_(-torch.pi/2, torch.pi/2)
-        self.command_setrpy_w[env_ids, 2:3] = math_utils.wrap_to_pi(target_yaw)
+        self.command_setrpy_w[env_ids, 2:3] = wrap_to_pi(target_yaw)
         self.sample_virtual_mass(env_ids)
         self.command_mode[env_ids] = self.CMD_POSITION
 
@@ -490,7 +490,7 @@ class Impedance(Command):
         set_linvel[:, 0].uniform_(0.4, 1.5)
         self.set_linvel[env_ids] = set_linvel
         target_yaw = self.asset.data.heading_w[env_ids, None] + scalar.uniform_(-torch.pi/2, torch.pi/2)
-        self.command_setrpy_w[env_ids, 2:3] = math_utils.wrap_to_pi(target_yaw)
+        self.command_setrpy_w[env_ids, 2:3] = wrap_to_pi(target_yaw)
         self.sample_virtual_mass(env_ids)
         self.command_mode[env_ids] = self.CMD_LINVEL
     

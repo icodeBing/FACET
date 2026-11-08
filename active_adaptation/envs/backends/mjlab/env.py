@@ -78,7 +78,12 @@ class MjlabBackendEnv(_EnvBase):
                 njmax=500,
                 contact_sensor_maxmatch=80,
                 mujoco=MujocoCfg(
-                    timestep=0.005,
+                    timestep=float(
+                        self.cfg.sim.get(
+                            "mjlab_physics_dt",
+                            self.cfg.sim.get("mujoco_physics_dt", 0.005),
+                        )
+                    ),
                     iterations=10,
                     ls_iterations=20,
                 ),

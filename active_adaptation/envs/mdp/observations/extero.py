@@ -74,7 +74,7 @@ class external_forces(Observation):
     # MuJoCo exposes the same normalized body-frame applied-force buffer as
     # Isaac (``_external_force_b``), so keep the observation shape identical
     # for FACET student/adaptation rollouts.
-    supported_backends = ("isaac", "mujoco")
+    supported_backends = ("isaac", "mujoco", "mjlab")
     def __init__(self, env, body_names, divide_by_mass: bool=True, scale: float = 1.0):
         super().__init__(env)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -83,10 +83,18 @@ class external_forces(Observation):
         self.forces_b = torch.zeros(self.num_envs, len(self.body_ids) * 3, device=self.device)
         default_mass_total = self.asset.data.default_mass[0].sum() * 9.81
         self.denom = default_mass_total if divide_by_mass else torch.tensor(scale, device=self.device)
+        if self.env.backend == "mjlab":
+            self.global_body_ids = self.asset.indexing.body_ids[self.body_ids]
 
     def update(self):
-        forces_b = self.asset._external_force_b[:, self.body_ids]
-        forces_b /= self.denom
+        if self.env.backend == "mjlab":
+            forces_w = self.asset.data.data.xfrc_applied[:, self.global_body_ids, :3]
+            forces_b = quat_rotate_inverse(
+                self.asset.data.body_quat_w[:, self.body_ids], forces_w
+            )
+        else:
+            forces_b = self.asset._external_force_b[:, self.body_ids]
+        forces_b = forces_b / self.denom
         self.forces_b = forces_b
 
     def compute(self) -> torch.Tensor:
@@ -97,7 +105,7 @@ class external_forces(Observation):
 
 
 class external_torques(Observation):
-    supported_backends = ("isaac", "mujoco")
+    supported_backends = ("isaac", "mujoco", "mjlab")
     def __init__(self, env, body_names, divide_by_mass: bool=True, scale: float = 0.2):
         super().__init__(env)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -106,9 +114,17 @@ class external_torques(Observation):
         self.torques_b = torch.zeros(self.num_envs, len(self.body_ids) * 3, device=self.device)
         default_inertia = self.asset.data.default_inertia[0, 0, [0, 4, 8]].to(self.device)
         self.denom = default_inertia if divide_by_mass else torch.tensor(scale, device=self.device)
+        if self.env.backend == "mjlab":
+            self.global_body_ids = self.asset.indexing.body_ids[self.body_ids]
     
     def update(self):
-        torques_b = self.asset._external_torque_b[:, self.body_ids]
+        if self.env.backend == "mjlab":
+            torques_w = self.asset.data.data.xfrc_applied[:, self.global_body_ids, 3:]
+            torques_b = quat_rotate_inverse(
+                self.asset.data.body_quat_w[:, self.body_ids], torques_w
+            )
+        else:
+            torques_b = self.asset._external_torque_b[:, self.body_ids]
         torques_b = torques_b / self.denom
         self.torques_b = torques_b
     

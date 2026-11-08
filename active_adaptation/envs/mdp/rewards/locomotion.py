@@ -58,7 +58,7 @@ class angvel_xy_l2(Reward):
 
 
 class undesired_contact(Reward):
-    supported_backends = ("isaac",)
+    supported_backends = ("isaac", "mjlab")
     def __init__(self, env, body_names: Names, weight: float):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]

@@ -493,14 +493,49 @@ class AssetCfg:
         
         spec = mujoco.MjSpec.from_file(str(self.mjcf_path))
 
+        merged = self._merge_actuator_dicts()
+        try:
+            from mjlab.utils.lab_api import string as string_utils
+        except ModuleNotFoundError:
+            import isaaclab.utils.string as string_utils
+
+        joint_names = list(self.joint_names_simulation or ())
+        if not joint_names:
+            joint_names = list(spec.joints)
+            joint_names = [joint.name for joint in joint_names if joint.name]
+
+        def _resolve(field):
+            ids, _, values = string_utils.resolve_matching_names_values(
+                {pattern: value for pattern, value in field.items()}, joint_names
+            )
+            return {joint_names[joint_id]: float(value) for joint_id, value in zip(ids, values)}
+
+        fields = {
+            name: _resolve(merged[name])
+            for name in ("effort_limit", "stiffness", "damping", "friction", "armature")
+        }
+        groups = {}
+        for joint_name in joint_names:
+            params = tuple(fields[name][joint_name] for name in fields)
+            groups.setdefault(params, []).append(joint_name)
+
+        mjlab_actuators = tuple(
+            BuiltinPositionActuatorCfg(
+                target_names_expr=tuple(names),
+                effort_limit=params[0],
+                stiffness=params[1],
+                damping=params[2],
+                frictionloss=params[3],
+                armature=params[4],
+            )
+            for params, names in groups.items()
+        )
+
         return EntityCfg(
             init_state=self.init_state.mjlab(),
             spec_fn=lambda: spec,
             articulation=EntityArticulationInfoCfg(
-                actuators=tuple(
-                    actuator.mjlab()
-                    for actuator in self.actuators.values()
-                ),
+                actuators=mjlab_actuators,
                 soft_joint_pos_limit_factor=0.9,
             ),
             collisions=(collision_cfg,),

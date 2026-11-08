@@ -104,7 +104,7 @@ def _set_external_wrench(
 
 
 class motor_params(Randomization):
-    supported_backends = ("isaac",)
+    supported_backends = ("isaac", "mjlab")
     def __init__(
         self,
         env,
@@ -118,23 +118,54 @@ class motor_params(Randomization):
         self.ranges = {}
         self.write_func = {}
 
+        if self.env.backend == "mjlab":
+            _mjlab_expand_model_fields(self.env, "actuator_gainprm", "actuator_biasprm")
+            self.mjlab_model = self.env.sim.model
+            joint_ids = self.asset.indexing.joint_ids.tolist()
+            actuator_joint_ids = self.env.sim.mj_model.actuator_trnid[:, 0]
+            self.mjlab_actuator_ids = {}
+            for local_id, global_id in enumerate(joint_ids):
+                matches = np.flatnonzero(actuator_joint_ids == global_id)
+                if len(matches):
+                    self.mjlab_actuator_ids[local_id] = int(matches[0])
+
         if stiffness_range is not None:
             self.stiffness_range = dict(stiffness_range)
             ids, _, value = string_utils.resolve_matching_names_values(self.stiffness_range, self.asset.joint_names)
-            default = self.asset.data.joint_stiffness[0, ids]
+            if self.env.backend == "isaac":
+                default = self.asset.data.joint_stiffness[0, ids]
+                self.write_func["stiffness"] = self.asset.write_joint_stiffness_to_sim
+            else:
+                self.mjlab_stiffness_ids = torch.as_tensor(
+                    [self.mjlab_actuator_ids[i] for i in ids],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                default = self.mjlab_model.actuator_gainprm[
+                    0, self.mjlab_stiffness_ids, 0
+                ]
             low, high = (torch.tensor(value, device=self.device) * default.unsqueeze(1)).unbind(1)
             self.indices["stiffness"] = torch.tensor(ids, device=self.device)
             self.ranges["stiffness"] = (low, high - low)
-            self.write_func["stiffness"] = self.asset.write_joint_stiffness_to_sim
         
         if damping_range is not None:
             self.damping_range = dict(damping_range)
             ids, _, value = string_utils.resolve_matching_names_values(self.damping_range, self.asset.joint_names)
-            default = self.asset.data.joint_damping[0, ids]
+            if self.env.backend == "isaac":
+                default = self.asset.data.joint_damping[0, ids]
+                self.write_func["damping"] = self.asset.write_joint_damping_to_sim
+            else:
+                self.mjlab_damping_ids = torch.as_tensor(
+                    [self.mjlab_actuator_ids[i] for i in ids],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                default = -self.mjlab_model.actuator_biasprm[
+                    0, self.mjlab_damping_ids, 2
+                ]
             low, high = (torch.tensor(value, device=self.device) * default.unsqueeze(1)).unbind(1)
             self.indices["damping"] = torch.tensor(ids, device=self.device)
             self.ranges["damping"] = (low, high - low)
-            self.write_func["damping"] = self.asset.write_joint_damping_to_sim
 
         if armature_range is not None:
             self.armature_range = dict(armature_range)
@@ -142,9 +173,33 @@ class motor_params(Randomization):
             low, high = torch.tensor(value, device=self.device).unbind(1)
             self.indices["armature"] = torch.tensor(ids, device=self.device)
             self.ranges["armature"] = (low, high - low)
-            self.write_func["armature"] = self.asset.write_joint_armature_to_sim
+            if self.env.backend == "isaac":
+                self.write_func["armature"] = self.asset.write_joint_armature_to_sim
+            else:
+                raise NotImplementedError("mjlab motor_params armature randomization is not implemented")
         
     def reset(self, env_ids):
+        if self.env.backend == "mjlab":
+            if "stiffness" in self.ranges:
+                low, span = self.ranges["stiffness"]
+                values = torch.rand(
+                    len(env_ids), len(self.mjlab_stiffness_ids), device=self.device
+                ) * span + low
+                self.mjlab_model.actuator_gainprm[
+                    env_ids[:, None], self.mjlab_stiffness_ids, 0
+                ] = values
+                self.mjlab_model.actuator_biasprm[
+                    env_ids[:, None], self.mjlab_stiffness_ids, 1
+                ] = -values
+            if "damping" in self.ranges:
+                low, span = self.ranges["damping"]
+                values = torch.rand(
+                    len(env_ids), len(self.mjlab_damping_ids), device=self.device
+                ) * span + low
+                self.mjlab_model.actuator_biasprm[
+                    env_ids[:, None], self.mjlab_damping_ids, 2
+                ] = -values
+            return
         for key, indices in self.indices.items():
             low, range = self.ranges[key]
             values = torch.rand(len(env_ids), len(indices), device=self.device) * range + low

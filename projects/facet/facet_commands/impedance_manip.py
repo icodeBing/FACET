@@ -453,11 +453,16 @@ class ImpedanceCommandManager(Command):
         #     self.get_eef_force(self.asset.data.body_pos_w[:, self.eef_body_id], self.asset.data.body_lin_vel_w[:, self.eef_body_id])
         # )
         force_base_w = self.force_impulse.get_force(None, None)
-        self.asset._external_force_b[:, 0] += quat_rotate_inverse(
-            self.asset.data.root_link_quat_w,
-            force_base_w
-        )
-        self.asset.has_external_wrench = True
+        if self.env.backend == "mjlab":
+            # MuJoCo xfrc_applied uses world-frame force/torque at the body COM.
+            root_body_id = int(self.asset.indexing.body_ids[0])
+            self.asset.data.data.xfrc_applied[:, root_body_id, :3] += force_base_w
+        else:
+            self.asset._external_force_b[:, 0] += quat_rotate_inverse(
+                self.asset.data.root_link_quat_w,
+                force_base_w
+            )
+            self.asset.has_external_wrench = True
 
     def reset(self, env_ids: torch.Tensor):
         if self.randomize_gait_phase:
