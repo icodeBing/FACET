@@ -20,6 +20,47 @@ command:
 
 reward:
   loco:
+    # A direct signed velocity term is needed for this isolated backward test;
+    # the generic FACET reference remains active, but its compliant preview is
+    # intentionally slower than the command during the observed failure.
+    facet_backward_com_velocity_tracking:
+      _target_: facet_backward_com_velocity_tracking
+      weight: 2.00
+      sigma: 0.12
+
+    # Use the Unitree-style phase/contact/clearance chain for backward walking.
+    # The existing terms project motion onto the signed command direction, so
+    # these weights improve rearward stepping without changing forward config.
+    biped_alternating_contact:
+      weight: 2.75
+    biped_swing_height:
+      weight: 1.25
+      clearance: 0.065
+      height_sigma: 0.045
+    biped_swing_knee_flexion:
+      weight: 0.75
+    biped_knee_phase_symmetry:
+      weight: 0.75
+    biped_swing_hip_flexion:
+      weight: 0.70
+    biped_swing_forward:
+      weight: 1.20
+      min_step_length: 0.08
+      max_step_length: 0.30
+      velocity_sigma: 0.18
+    biped_swing_foot_placement:
+      weight: 1.10
+      min_step_length: 0.08
+      max_step_length: 0.30
+      position_sigma: 0.075
+    biped_stride_limit:
+      weight: 1.00
+      max_separation: 0.26
+      scale: 0.06
+    biped_stance_foot_velocity:
+      weight: 0.75
+      speed_scale: 0.25
+
     # These conditional metrics are logged, but do not enter PPO's objective.
     facet_backward_actual_com_linvel_b_x:
       {_target_: facet_backward_actual_com_linvel_b_x, weight: 1.0, enabled: false}

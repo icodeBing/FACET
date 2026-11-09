@@ -342,7 +342,10 @@ class facet_stand_foot_velocity(Reward[ImpedanceCommandManager]):
             raise ValueError("facet_stand_foot_velocity sigma must be positive")
 
     def _compute(self):
-        velocity = self.asset.data.body_lin_vel_w[:, self.foot_ids, :2]
+        # Include vertical velocity as well.  A horizontal-only metric can
+        # reward a periodic toe lift because the foot is nearly stationary in
+        # xy while it is moving through the air.
+        velocity = self.asset.data.body_lin_vel_w[:, self.foot_ids, :3]
         reward = torch.exp(-(velocity.norm(dim=-1).square() / self.sigma**2))
         reward = reward.amin(dim=-1, keepdim=True)
         return reward, self.command_manager.is_standing_env
@@ -375,6 +378,59 @@ class facet_stand_root_motion(Reward[ImpedanceCommandManager]):
         )
         reward = -motion_cost
         return reward, self.command_manager.is_standing_env
+
+
+class facet_stand_root_position(Reward[ImpedanceCommandManager]):
+    """Keep the CoM near the position where an explicit stand began.
+
+    A velocity-only standing term permits slow drift: the instantaneous speed
+    can be small while the robot walks away over several seconds.  The command
+    manager rebases ``stand_anchor_pos_w`` whenever a stand command starts, so
+    this term constrains displacement without freezing normal walking.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        position_sigma: float = 0.08,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.position_sigma = float(position_sigma)
+        if self.position_sigma <= 0.0:
+            raise ValueError("standing position sigma must be positive")
+
+    def _compute(self):
+        anchor = self.command_manager.stand_anchor_pos_w[:, :2]
+        current = self.asset.data.root_com_pos_w[:, :2]
+        error = (current - anchor).norm(dim=-1, keepdim=True)
+        reward = torch.exp(-(error / self.position_sigma).square())
+        return reward, self.command_manager.is_standing_env
+
+
+class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
+    """Track the signed backward CoM velocity in the robot yaw frame."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        sigma: float = 0.12,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("backward velocity sigma must be positive")
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_b[:, 0:1]
+        actual = self.asset.data.root_com_lin_vel_b[:, 0:1]
+        backward = command < -self.command_manager.stand_speed_threshold
+        error = (actual - command) / self.sigma
+        reward = torch.exp(-error.square())
+        return reward, backward
 
 
 class facet_command_linvel_x(Reward[ImpedanceCommandManager]):
