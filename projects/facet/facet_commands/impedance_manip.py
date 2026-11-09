@@ -367,6 +367,8 @@ class ImpedanceCommandManager(Command):
             self.pos_eef = State.zeros(bshape)
 
             self.setpoint_w = torch.zeros(self.num_envs, 3 + 3) # translation and rotation
+            # Hold the reference at the CoM where a standing command begins.
+            self.stand_anchor_pos_w = torch.zeros(self.num_envs, 3)
             # not `setvel`, just to move the setpoint to generate more diverse commands
             self.setpoint_vel_w = torch.zeros(self.num_envs, 3)
             self.setpoint_b = torch.zeros(self.num_envs, 3 + 3) # translation and rotation
@@ -575,6 +577,7 @@ class ImpedanceCommandManager(Command):
         # velocity consistently for the reference trajectory.
         root_link_pos = self.asset.data.root_com_pos_w[env_ids]
         root_link_rpy = euler_from_quat(self.asset.data.root_link_quat_w[env_ids])
+        self.stand_anchor_pos_w[env_ids] = root_link_pos
         self.pos_base.pos_w[env_ids] = root_link_pos.unsqueeze(1)
         self.pos_base.vel_w[env_ids] = self.asset.data.root_com_lin_vel_w[env_ids].unsqueeze(1)
         self.rot_base.pos_w[env_ids] = root_link_rpy.unsqueeze(1)
@@ -684,6 +687,13 @@ class ImpedanceCommandManager(Command):
         self.pos_base = self.pos_base.roll(1, 1)
         self.pos_base.pos_w[:, 0] = self.asset.data.root_com_pos_w
         self.pos_base.vel_w[:, 0] = self.asset.data.root_com_lin_vel_w
+        # Drop the old walking preview after a stand command is sampled.
+        # Otherwise the first standing window can inherit forward momentum
+        # from the previous command and reward continued walking.
+        standing = self.is_standing_env[:, 0]
+        if standing.any():
+            self.pos_base.pos_w[standing] = self.stand_anchor_pos_w[standing].unsqueeze(1)
+            self.pos_base.vel_w[standing] = 0.0
 
         self.rot_base = self.rot_base.roll(1, 1)
         self.rot_base.pos_w[:, 0] = self.root_link_rpy_w
@@ -856,9 +866,14 @@ class ImpedanceCommandManager(Command):
         lin_kd = self.cmd.kd_base[env_ids, 0:1]
         ang_kp = self.cmd.kp_base[env_ids, 1:2]
         ang_kd = self.cmd.kd_base[env_ids, 1:2]
-        self.setpoint_w[env_ids, :3] = (
+        moving_target = (
             self.asset.data.root_com_pos_w[env_ids]
             + self.cmd_linvel_w[env_ids] * (lin_kd / lin_kp.clamp_min(1e-6))
+        )
+        self.setpoint_w[env_ids, :3] = torch.where(
+            self.is_standing_env[env_ids],
+            self.stand_anchor_pos_w[env_ids],
+            moving_target,
         )
         self.setpoint_w[env_ids, 3:6] = self.root_link_rpy_w[env_ids]
         self.setpoint_w[env_ids, 2] = self.asset.data.root_com_pos_w[env_ids, 2]
@@ -871,7 +886,12 @@ class ImpedanceCommandManager(Command):
     def _update_velocity_command(self, resample_mask: torch.Tensor):
         env_ids = resample_mask.nonzero().squeeze(-1)
         if env_ids.numel() > 0:
+            was_standing = self.is_standing_env[env_ids, 0].clone()
             self._sample_velocity(env_ids)
+            newly_standing = self.is_standing_env[env_ids, 0] & ~was_standing
+            stand_env_ids = env_ids[newly_standing]
+            if stand_env_ids.numel() > 0:
+                self.stand_anchor_pos_w[stand_env_ids] = self.asset.data.root_com_pos_w[stand_env_ids]
             # Refresh the translational setpoint while preserving the episode
             # heading target; rebasing it to current yaw creates a curved path.
             self.setpoint_vel_w[env_ids] = 0.0

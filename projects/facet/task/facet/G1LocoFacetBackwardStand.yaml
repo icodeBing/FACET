@@ -1,0 +1,29 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacet@_here_
+  - _self_
+
+name: G1LocoFacetBackwardStand
+
+# Isolate backward walking and standing while retaining the v3 policy as the
+# initialization. Zero forward samples are classified as explicit stand tasks.
+command:
+  linvel_x_range: [0.0, 0.0]
+  backward_linvel_x_range: [-0.30, -0.15]
+  backward_prob: 0.50
+  velocity_curriculum: false
+  stand_prob: 0.0
+  stand_speed_threshold: 0.02
+  linvel_y_range: [0.0, 0.0]
+  yawvel_range: [0.0, 0.0]
+  disturbance_prob: 0.0
+
+reward:
+  loco:
+    # These conditional metrics are logged, but do not enter PPO's objective.
+    facet_backward_actual_com_linvel_b_x:
+      {_target_: facet_backward_actual_com_linvel_b_x, weight: 1.0, enabled: false}
+    facet_backward_actual_com_linvel_b_x_error:
+      {_target_: facet_backward_actual_com_linvel_b_x_error, weight: 1.0, enabled: false}
+    facet_stand_actual_com_speed:
+      {_target_: facet_stand_actual_com_speed, weight: 1.0, enabled: false}

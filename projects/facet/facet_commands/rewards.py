@@ -367,8 +367,13 @@ class facet_stand_root_motion(Reward[ImpedanceCommandManager]):
 
     def _compute(self):
         linear = self.asset.data.root_com_lin_vel_b[:, :2] / self.linear_sigma
-        angular = self.asset.data.root_com_ang_vel_b[:, :2] / self.angular_sigma
-        reward = torch.exp(-(linear.square().sum(-1, keepdim=True) + angular.square().sum(-1, keepdim=True)))
+        angular = self.asset.data.root_com_ang_vel_b / self.angular_sigma
+        # Keep gradients useful when the robot is far from stationary.
+        motion_cost = torch.log1p(
+            linear.square().sum(-1, keepdim=True)
+            + angular.square().sum(-1, keepdim=True)
+        )
+        reward = -motion_cost
         return reward, self.command_manager.is_standing_env
 
 
@@ -428,6 +433,45 @@ class facet_command_actual_vel_error(Reward[ImpedanceCommandManager]):
         command = self.command_manager.cmd_linvel_w[:, :2]
         current = self.asset.data.root_com_lin_vel_w[:, :2]
         return (current - command).norm(dim=-1, keepdim=True)
+
+
+class facet_backward_actual_com_linvel_b_x(Reward[ImpedanceCommandManager]):
+    """Diagnostic: actual forward-axis CoM velocity on backward commands."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_b[:, 0:1]
+        backward = command < -self.command_manager.stand_speed_threshold
+        return self.asset.data.root_com_lin_vel_b[:, 0:1], backward
+
+
+class facet_backward_actual_com_linvel_b_x_error(Reward[ImpedanceCommandManager]):
+    """Diagnostic: backward-command CoM velocity tracking error."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        command = self.command_manager.cmd_linvel_b[:, 0:1]
+        actual = self.asset.data.root_com_lin_vel_b[:, 0:1]
+        backward = command < -self.command_manager.stand_speed_threshold
+        return (actual - command).abs(), backward
+
+
+class facet_stand_actual_com_speed(Reward[ImpedanceCommandManager]):
+    """Diagnostic: horizontal CoM speed on standing commands."""
+
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.asset = self.command_manager.asset
+
+    def _compute(self):
+        speed = self.asset.data.root_com_lin_vel_b[:, :2].norm(dim=-1, keepdim=True)
+        return speed, self.command_manager.is_standing_env
 
 
 def _reference_linvel_b(command_manager: ImpedanceCommandManager, asset):
