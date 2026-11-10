@@ -1,0 +1,15 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacetBackwardStand@_here_
+  - _self_
+
+name: G1LocoFacetBackward
+
+# Isolate a fixed-speed backward gait while disabling explicit stand samples.
+command:
+  linvel_x_range: [0.0, 0.0]
+  backward_linvel_x_range: [-0.20, -0.20]
+  backward_prob: 1.0
+  stand_prob: 0.0
+  velocity_curriculum: false
+  fixed_velocity: true

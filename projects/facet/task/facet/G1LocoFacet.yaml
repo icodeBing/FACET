@@ -131,6 +131,22 @@ reward:
         - ".*ankle_pitch_joint"
         - ".*ankle_roll_joint"
       sigma: 0.22
+    # Unitree's G1 joint_mirror is a separate reward term. Use signed
+    # mirroring around the nominal pose here, gated to standing commands so
+    # it cannot collapse alternating walking legs into the same posture.
+    facet_joint_mirror:
+      _target_: facet_joint_mirror
+      weight: 1.00
+      joint_pairs:
+        - [left_hip_pitch_joint, right_hip_pitch_joint]
+        - [left_hip_roll_joint, right_hip_roll_joint]
+        - [left_hip_yaw_joint, right_hip_yaw_joint]
+        - [left_knee_joint, right_knee_joint]
+        - [left_ankle_pitch_joint, right_ankle_pitch_joint]
+        - [left_ankle_roll_joint, right_ankle_roll_joint]
+      # Pitch and knee axes mirror with the same sign; roll/yaw reverse.
+      mirror_signs: [1.0, -1.0, -1.0, 1.0, 1.0, -1.0]
+      sigma: 0.20
     facet_stand_foot_width:
       _target_: facet_stand_foot_width
       weight: 1.25
@@ -148,11 +164,11 @@ reward:
       stagger_sigma: 0.04
     facet_stand_foot_contact:
       _target_: facet_stand_foot_contact
-      weight: 0.80
+      weight: 2.00
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
     facet_stand_foot_velocity:
       _target_: facet_stand_foot_velocity
-      weight: 0.50
+      weight: 1.00
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       sigma: 0.08
     facet_stand_root_motion:
@@ -162,7 +178,7 @@ reward:
       angular_sigma: 0.20
     facet_stand_root_position:
       _target_: facet_stand_root_position
-      weight: 1.50
+      weight: 2.00
       position_sigma: 0.08
     angvel_xy_l2: {weight: 0.40, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.5, gamma: 0.8}

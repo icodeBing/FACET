@@ -308,7 +308,7 @@ class facet_stand_foot_pose(Reward[ImpedanceCommandManager]):
 
 
 class facet_stand_foot_contact(Reward[ImpedanceCommandManager]):
-    """Require both feet to remain in contact for a standing command."""
+    """Require simultaneous contact from both feet during a stand command."""
 
     def __init__(self, env, weight: float, body_names):
         super().__init__(env, weight)
@@ -323,7 +323,7 @@ class facet_stand_foot_contact(Reward[ImpedanceCommandManager]):
         contact = (
             self.contact_sensor.data.current_contact_time[:, self.contact_ids] > 0.0
         )
-        reward = contact.float().mean(dim=-1, keepdim=True)
+        reward = contact.all(dim=-1, keepdim=True).float()
         return reward, self.command_manager.is_standing_env
 
 
@@ -431,6 +431,139 @@ class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
         error = (actual - command) / self.sigma
         reward = torch.exp(-error.square())
         return reward, backward
+
+
+class facet_joint_mirror(Reward[ImpedanceCommandManager]):
+    """Reward signed left/right joint mirroring around the nominal pose.
+
+    ``mirror_signs`` is +1 for sagittal-plane joints and -1 for joints whose
+    positive axis reverses under left/right reflection. This same-time mirror
+    term is restricted to standing commands; dynamic gait symmetry is handled
+    by phase-aware rewards instead of forcing alternating legs into one pose.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        joint_pairs,
+        mirror_signs,
+        sigma: float = 0.20,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        if len(joint_pairs) == 0 or len(joint_pairs) != len(mirror_signs):
+            raise ValueError(
+                "joint_pairs and mirror_signs must be nonempty and aligned"
+            )
+        pair_ids = []
+        for pair in joint_pairs:
+            if len(pair) != 2:
+                raise ValueError(
+                    "each mirror joint pair must contain left and right names"
+                )
+            left_ids = self.asset.find_joints([pair[0]], preserve_order=True)[0]
+            right_ids = self.asset.find_joints([pair[1]], preserve_order=True)[0]
+            if len(left_ids) != 1 or len(right_ids) != 1:
+                raise ValueError(f"mirror pair did not resolve to one joint per side: {pair}")
+            pair_ids.append((left_ids[0], right_ids[0]))
+        self.pair_ids = torch.tensor(pair_ids, device=self.device)
+        self.mirror_signs = torch.tensor(
+            mirror_signs, dtype=torch.float, device=self.device
+        )
+        if not torch.all((self.mirror_signs == 1.0) | (self.mirror_signs == -1.0)):
+            raise ValueError("mirror_signs entries must be +1 or -1")
+        self.default = self.asset.data.default_joint_pos[:, self.pair_ids]
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("mirror sigma must be positive")
+
+    def _compute(self):
+        joint_pos = self.asset.data.joint_pos[:, self.pair_ids]
+        delta = joint_pos - self.default
+        left_delta = delta[:, :, 0]
+        right_delta = delta[:, :, 1]
+        error = left_delta - self.mirror_signs * right_delta
+        reward = torch.exp(-((error / self.sigma).square().mean(dim=-1, keepdim=True)))
+        return reward, self.command_manager.is_standing_env
+
+
+class facet_backward_step_symmetry(Reward[ImpedanceCommandManager]):
+    """Match left/right touchdown stride lengths along the backward command."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_names,
+        sigma: float = 0.06,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.contact_sensor = self.env.scene.sensors["contact_forces"]
+        self.foot_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        self.contact_ids = self.contact_sensor.find_bodies(
+            body_names, preserve_order=True
+        )[0]
+        if len(self.foot_ids) != 2 or len(self.contact_ids) != 2:
+            raise ValueError("backward step symmetry requires ordered left/right feet")
+        self.foot_ids = torch.tensor(self.foot_ids, device=self.device)
+        self.contact_ids = torch.tensor(self.contact_ids, device=self.device)
+        self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("step symmetry sigma must be positive")
+        self.last_touchdown_w = torch.zeros(self.num_envs, 2, 3, device=self.device)
+        self.has_touchdown = torch.zeros(
+            self.num_envs, 2, dtype=torch.bool, device=self.device
+        )
+        self.last_stride = torch.zeros(self.num_envs, 2, device=self.device)
+        self.has_stride = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
+        self.last_episode_step = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+
+    def _compute(self):
+        episode_step = self.env.episode_length_buf
+        command = self.command_manager.cmd_linvel_b[:, :2]
+        backward = command[:, 0:1] < -self.command_manager.stand_speed_threshold
+        reset = (self.last_episode_step >= 0) & (
+            episode_step < self.last_episode_step
+        )
+        self.has_touchdown[reset] = False
+        self.has_stride[reset] = False
+        inactive = ~backward.squeeze(-1)
+        self.has_touchdown[inactive] = False
+        self.has_stride[inactive] = False
+        self.last_episode_step.copy_(episode_step)
+
+        feet_w = self.asset.data.body_link_pos_w[:, self.foot_ids]
+        touchdown = self.contact_sensor.compute_first_contact(self.env.step_dt)[
+            :, self.contact_ids
+        ].bool()
+        root_yaw = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        command_dir = command / command.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        for foot_index in range(2):
+            event = touchdown[:, foot_index]
+            previous_valid = self.has_touchdown[:, foot_index] & event
+            delta_w = feet_w[:, foot_index] - self.last_touchdown_w[:, foot_index]
+            delta_b = quat_rotate_inverse(root_yaw.squeeze(1), delta_w)
+            stride = (delta_b[:, :2] * command_dir).sum(dim=-1).clamp_min(0.0)
+            self.last_stride[:, foot_index] = torch.where(
+                previous_valid, stride, self.last_stride[:, foot_index]
+            )
+            self.has_stride[:, foot_index] |= previous_valid
+            self.last_touchdown_w[:, foot_index] = torch.where(
+                event.unsqueeze(-1),
+                feet_w[:, foot_index],
+                self.last_touchdown_w[:, foot_index],
+            )
+            self.has_touchdown[:, foot_index] |= event
+
+        error = self.last_stride[:, 0:1] - self.last_stride[:, 1:2]
+        reward = torch.exp(-((error / self.sigma).square()))
+        active = backward & self.has_stride.all(dim=-1, keepdim=True)
+        return reward, active
 
 
 class facet_command_linvel_x(Reward[ImpedanceCommandManager]):

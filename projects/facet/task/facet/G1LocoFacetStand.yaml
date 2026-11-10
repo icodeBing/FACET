@@ -1,0 +1,33 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacetBackwardStand@_here_
+  - _self_
+
+name: G1LocoFacetStand
+
+# Isolate zero-velocity stance. The stand reward terms are enabled by the
+# command manager's standing mask; phase/swing rewards remain inactive.
+command:
+  linvel_x_range: [0.0, 0.0]
+  backward_linvel_x_range: [-0.30, -0.15]
+  backward_prob: 0.0
+  stand_prob: 1.0
+  velocity_curriculum: false
+  fixed_velocity: true
+
+reward:
+  loco:
+    # Standing should not receive any phase-driven reward or target velocity.
+    facet_backward_com_velocity_tracking: {weight: 0.0}
+    facet_backward_step_symmetry: {weight: 0.0}
+    biped_alternating_contact: {weight: 0.0}
+    biped_swing_height: {weight: 0.0}
+    biped_swing_knee_flexion: {weight: 0.0}
+    biped_knee_phase_symmetry: {weight: 0.0}
+    biped_stance_knee_posture: {weight: 0.0}
+    biped_swing_hip_flexion: {weight: 0.0}
+    biped_swing_forward: {weight: 0.0}
+    biped_swing_foot_placement: {weight: 0.0}
+    biped_stride_limit: {weight: 0.0}
+    biped_stance_foot_velocity: {weight: 0.0}
+    feet_air_time: {weight: 0.0}

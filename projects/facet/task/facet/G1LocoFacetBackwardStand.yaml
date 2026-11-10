@@ -25,7 +25,7 @@ reward:
     # intentionally slower than the command during the observed failure.
     facet_backward_com_velocity_tracking:
       _target_: facet_backward_com_velocity_tracking
-      weight: 2.00
+      weight: 4.00
       sigma: 0.12
 
     # Use the Unitree-style phase/contact/clearance chain for backward walking.
@@ -43,16 +43,26 @@ reward:
       weight: 0.75
     biped_swing_hip_flexion:
       weight: 0.70
+      # The reward multiplies this signed excursion by command direction;
+      # negative commands therefore reverse the nominal forward hip target.
+      target_flexion: -0.28
     biped_swing_forward:
       weight: 1.20
       min_step_length: 0.08
-      max_step_length: 0.30
+      step_length_scale: 0.90
+      max_step_length: 0.25
       velocity_sigma: 0.18
     biped_swing_foot_placement:
       weight: 1.10
       min_step_length: 0.08
-      max_step_length: 0.30
+      step_length_scale: 0.90
+      max_step_length: 0.25
       position_sigma: 0.075
+    facet_backward_step_symmetry:
+      _target_: facet_backward_step_symmetry
+      weight: 0.80
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      sigma: 0.06
     biped_stride_limit:
       weight: 1.00
       max_separation: 0.26
