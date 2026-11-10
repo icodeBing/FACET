@@ -27,6 +27,28 @@ reward:
       _target_: facet_backward_com_velocity_tracking
       weight: 4.00
       sigma: 0.12
+    # Backward stride symmetry alone does not prevent sideways path drift.
+    # Penalize body-frame lateral speed, cross-track displacement from the
+    # start of the current backward segment, and heading error to the episode
+    # heading. This term is active only for negative x commands.
+    facet_backward_straightness:
+      _target_: facet_backward_straightness
+      weight: 1.00
+      lateral_velocity_sigma: 0.10
+      cross_track_sigma: 0.12
+      heading_sigma: 0.12
+    facet_backward_lateral_speed:
+      _target_: facet_backward_lateral_speed
+      weight: 1.0
+      enabled: false
+    facet_backward_cross_track_error:
+      _target_: facet_backward_cross_track_error
+      weight: 1.0
+      enabled: false
+    facet_backward_heading_error:
+      _target_: facet_backward_heading_error
+      weight: 1.0
+      enabled: false
 
     # Use the Unitree-style phase/contact/clearance chain for backward walking.
     # The existing terms project motion onto the signed command direction, so

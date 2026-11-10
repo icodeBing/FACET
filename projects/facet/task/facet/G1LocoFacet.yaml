@@ -178,8 +178,15 @@ reward:
       angular_sigma: 0.20
     facet_stand_root_position:
       _target_: facet_stand_root_position
-      weight: 2.00
+      # Keep this gentle in mixed locomotion; the stand-only task overrides it.
+      weight: 0.50
       position_sigma: 0.08
+    facet_stand_torso_stability:
+      _target_: facet_stand_torso_stability
+      weight: 0.50
+      body_name: torso_link
+      angle_sigma: 0.18
+      rate_sigma: 0.80
     angvel_xy_l2: {weight: 0.40, body_names: [pelvis, torso_link]}
     angvel_z_exp: {weight: 1.5, gamma: 0.8}
     root_yaw_rate_l2: {weight: 0.80}

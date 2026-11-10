@@ -17,6 +17,22 @@ command:
 
 reward:
   loco:
+    # The previous stand run had zero pitch-angle/rate rewards because the
+    # walking-only terms are gated off for stand commands. Add explicit
+    # stand-only torso damping and strengthen CoM anchoring without changing
+    # the walking or backward task.
+    facet_stand_torso_stability:
+      weight: 2.00
+      angle_sigma: 0.18
+      rate_sigma: 0.80
+    facet_stand_root_motion:
+      weight: 1.50
+      linear_sigma: 0.08
+      angular_sigma: 0.20
+    facet_stand_root_position:
+      weight: 1.00
+      position_sigma: 0.08
+
     # Standing should not receive any phase-driven reward or target velocity.
     facet_backward_com_velocity_tracking: {weight: 0.0}
     facet_backward_step_symmetry: {weight: 0.0}

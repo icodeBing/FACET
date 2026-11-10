@@ -369,6 +369,8 @@ class ImpedanceCommandManager(Command):
             self.setpoint_w = torch.zeros(self.num_envs, 3 + 3) # translation and rotation
             # Hold the reference at the CoM where a standing command begins.
             self.stand_anchor_pos_w = torch.zeros(self.num_envs, 3)
+            # Track each backward-command segment against its entry position.
+            self.backward_anchor_pos_w = torch.zeros(self.num_envs, 3)
             # not `setvel`, just to move the setpoint to generate more diverse commands
             self.setpoint_vel_w = torch.zeros(self.num_envs, 3)
             self.setpoint_b = torch.zeros(self.num_envs, 3 + 3) # translation and rotation
@@ -578,6 +580,7 @@ class ImpedanceCommandManager(Command):
         root_link_pos = self.asset.data.root_com_pos_w[env_ids]
         root_link_rpy = euler_from_quat(self.asset.data.root_link_quat_w[env_ids])
         self.stand_anchor_pos_w[env_ids] = root_link_pos
+        self.backward_anchor_pos_w[env_ids] = root_link_pos
         self.pos_base.pos_w[env_ids] = root_link_pos.unsqueeze(1)
         self.pos_base.vel_w[env_ids] = self.asset.data.root_com_lin_vel_w[env_ids].unsqueeze(1)
         self.rot_base.pos_w[env_ids] = root_link_rpy.unsqueeze(1)
@@ -887,11 +890,25 @@ class ImpedanceCommandManager(Command):
         env_ids = resample_mask.nonzero().squeeze(-1)
         if env_ids.numel() > 0:
             was_standing = self.is_standing_env[env_ids, 0].clone()
+            was_backward = (
+                self.cmd_linvel_b[env_ids, 0]
+                < -self.stand_speed_threshold
+            )
             self._sample_velocity(env_ids)
             newly_standing = self.is_standing_env[env_ids, 0] & ~was_standing
             stand_env_ids = env_ids[newly_standing]
             if stand_env_ids.numel() > 0:
                 self.stand_anchor_pos_w[stand_env_ids] = self.asset.data.root_com_pos_w[stand_env_ids]
+            is_backward = (
+                self.cmd_linvel_b[env_ids, 0]
+                < -self.stand_speed_threshold
+            )
+            newly_backward = is_backward & ~was_backward
+            backward_env_ids = env_ids[newly_backward]
+            if backward_env_ids.numel() > 0:
+                self.backward_anchor_pos_w[backward_env_ids] = (
+                    self.asset.data.root_com_pos_w[backward_env_ids]
+                )
             # Refresh the translational setpoint while preserving the episode
             # heading target; rebasing it to current yaw creates a curved path.
             self.setpoint_vel_w[env_ids] = 0.0

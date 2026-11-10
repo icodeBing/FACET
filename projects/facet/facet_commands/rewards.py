@@ -380,6 +380,39 @@ class facet_stand_root_motion(Reward[ImpedanceCommandManager]):
         return reward, self.command_manager.is_standing_env
 
 
+class facet_stand_torso_stability(Reward[ImpedanceCommandManager]):
+    """Penalize torso roll/pitch tilt and angular motion during standing."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_name: str = "torso_link",
+        angle_sigma: float = 0.18,
+        rate_sigma: float = 0.8,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        body_ids = self.asset.find_bodies(body_name, preserve_order=True)[0]
+        if len(body_ids) != 1:
+            raise ValueError("facet_stand_torso_stability requires exactly one body")
+        self.body_id = body_ids[0]
+        self.angle_sigma = float(angle_sigma)
+        self.rate_sigma = float(rate_sigma)
+        if self.angle_sigma <= 0.0 or self.rate_sigma <= 0.0:
+            raise ValueError("standing torso stability sigmas must be positive")
+
+    def _compute(self):
+        body_quat = self.asset.data.body_quat_w[:, self.body_id]
+        roll_pitch = euler_from_quat(body_quat)[:, :2]
+        body_ang_vel = quat_rotate_inverse(
+            body_quat, self.asset.data.body_ang_vel_w[:, self.body_id]
+        )[:, :2]
+        cost = (roll_pitch / self.angle_sigma).square().sum(-1, keepdim=True)
+        cost += (body_ang_vel / self.rate_sigma).square().sum(-1, keepdim=True)
+        return -torch.log1p(cost), self.command_manager.is_standing_env
+
+
 class facet_stand_root_position(Reward[ImpedanceCommandManager]):
     """Keep the CoM near the position where an explicit stand began.
 
@@ -405,7 +438,9 @@ class facet_stand_root_position(Reward[ImpedanceCommandManager]):
         anchor = self.command_manager.stand_anchor_pos_w[:, :2]
         current = self.asset.data.root_com_pos_w[:, :2]
         error = (current - anchor).norm(dim=-1, keepdim=True)
-        reward = torch.exp(-(error / self.position_sigma).square())
+        # Unlike exp(-error^2), log1p keeps a useful gradient after the robot
+        # has drifted several sigma away from its standing anchor.
+        reward = -torch.log1p((error / self.position_sigma).square())
         return reward, self.command_manager.is_standing_env
 
 
@@ -431,6 +466,110 @@ class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
         error = (actual - command) / self.sigma
         reward = torch.exp(-error.square())
         return reward, backward
+
+
+class facet_backward_straightness(Reward[ImpedanceCommandManager]):
+    """Limit lateral drift and heading error during backward commands."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        lateral_velocity_sigma: float = 0.10,
+        cross_track_sigma: float = 0.12,
+        heading_sigma: float = 0.12,
+    ):
+        super().__init__(env, weight)
+        self.command_manager: ImpedanceCommandManager = self.env.command_manager
+        self.asset = self.command_manager.asset
+        self.lateral_velocity_sigma = float(lateral_velocity_sigma)
+        self.cross_track_sigma = float(cross_track_sigma)
+        self.heading_sigma = float(heading_sigma)
+        if min(
+            self.lateral_velocity_sigma,
+            self.cross_track_sigma,
+            self.heading_sigma,
+        ) <= 0.0:
+            raise ValueError("backward straightness sigmas must be positive")
+
+    def _compute(self):
+        backward = (
+            self.command_manager.cmd_linvel_b[:, 0:1]
+            < -self.command_manager.stand_speed_threshold
+        )
+        lateral_velocity = self.asset.data.root_com_lin_vel_b[:, 1:2]
+
+        delta_w = (
+            self.asset.data.root_com_pos_w
+            - self.command_manager.backward_anchor_pos_w
+        )
+        heading_ref = self.command_manager.command_heading_w
+        cross_track_error = (
+            -torch.sin(heading_ref) * delta_w[:, 0]
+            + torch.cos(heading_ref) * delta_w[:, 1]
+        ).unsqueeze(-1)
+
+        heading = self.asset.data.heading_w.reshape(-1, 1)
+        heading_error = wrap_to_pi(
+            heading - self.command_manager.command_heading_w.unsqueeze(-1)
+        )
+        cost = (lateral_velocity / self.lateral_velocity_sigma).square()
+        cost += (cross_track_error / self.cross_track_sigma).square()
+        cost += (heading_error / self.heading_sigma).square()
+        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+        return -torch.log1p(cost), backward & ~force_active
+
+
+class _BackwardStraightnessDiagnostic(Reward[ImpedanceCommandManager]):
+    def __init__(self, env, component: str, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, weight, enabled)
+        self.command_manager: ImpedanceCommandManager = self.env.command_manager
+        self.asset = self.command_manager.asset
+        self.component = component
+
+    def _compute(self):
+        backward = (
+            self.command_manager.cmd_linvel_b[:, 0:1]
+            < -self.command_manager.stand_speed_threshold
+        )
+        if self.component == "lateral_velocity":
+            value = self.asset.data.root_com_lin_vel_b[:, 1:2].abs()
+        elif self.component == "cross_track":
+            delta_w = (
+                self.asset.data.root_com_pos_w
+                - self.command_manager.backward_anchor_pos_w
+            )
+            heading_ref = self.command_manager.command_heading_w
+            cross_track = (
+                -torch.sin(heading_ref) * delta_w[:, 0]
+                + torch.cos(heading_ref) * delta_w[:, 1]
+            )
+            value = cross_track.unsqueeze(-1).abs()
+        elif self.component == "heading_error":
+            heading = self.asset.data.heading_w.reshape(-1, 1)
+            value = wrap_to_pi(
+                heading - self.command_manager.command_heading_w.unsqueeze(-1)
+            ).abs()
+        else:
+            raise ValueError(f"unknown backward straightness component: {self.component}")
+        return value, backward
+
+
+class facet_backward_lateral_speed(_BackwardStraightnessDiagnostic):
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, "lateral_velocity", weight, enabled)
+
+
+class facet_backward_cross_track_error(_BackwardStraightnessDiagnostic):
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, "cross_track", weight, enabled)
+
+
+class facet_backward_heading_error(_BackwardStraightnessDiagnostic):
+    def __init__(self, env, weight: float = 1.0, enabled: bool = False):
+        super().__init__(env, "heading_error", weight, enabled)
 
 
 class facet_joint_mirror(Reward[ImpedanceCommandManager]):
