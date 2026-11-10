@@ -12,6 +12,19 @@ if TYPE_CHECKING:
 
 Names = Union[str, List[str]]
 
+
+def _command_direction_mask(command_manager, direction: str):
+    if direction not in {"all", "forward", "backward"}:
+        raise ValueError("command_direction must be all, forward, or backward")
+    if direction == "all":
+        return True
+    command_x = command_manager.cmd_linvel_b[:, 0:1]
+    threshold = command_manager.stand_speed_threshold
+    if direction == "forward":
+        return command_x > threshold
+    return command_x < -threshold
+
+
 class survival(Reward):
     @override
     def _compute(self):
@@ -353,6 +366,7 @@ class biped_alternating_contact(Reward):
         body_names: Names,
         period: float = 0.8,
         threshold: float = 0.55,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
@@ -370,6 +384,8 @@ class biped_alternating_contact(Reward):
         self.threshold = float(threshold)
         if not 0.0 < self.threshold < 1.0:
             raise ValueError("threshold must be in (0, 1)")
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
 
     def _compute(self) -> torch.Tensor:
         contact = self.contact_sensor.data.current_contact_time[:, self.body_ids] > 0.0
@@ -390,7 +406,9 @@ class biped_alternating_contact(Reward):
                         -0.5 * torch.ones_like(contact, dtype=torch.float32)),
         )
         reward = reward_per_foot.sum(dim=1, keepdim=True)
-        active = ~self.command_manager.is_standing_env
+        active = (
+            ~self.command_manager.is_standing_env
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward, active.reshape(self.num_envs, 1)
 
 
@@ -466,6 +484,7 @@ class biped_swing_height(Reward):
         nominal_height: float = 0.035,
         clearance: float = 0.045,
         height_sigma: float = 0.05,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -477,6 +496,8 @@ class biped_swing_height(Reward):
         self.nominal_height = float(nominal_height)
         self.clearance = float(clearance)
         self.height_sigma = float(height_sigma)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
         if (
@@ -508,7 +529,7 @@ class biped_swing_height(Reward):
         upright = (-self.asset.data.projected_gravity_b[:, 2]).clamp(0.0, 0.7) / 0.7
         active = (~self.command_manager.is_standing_env) & in_swing.any(
             dim=1, keepdim=True
-        )
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward * upright.unsqueeze(1), active
 
 
@@ -530,6 +551,7 @@ class biped_swing_knee_flexion(Reward):
         stance_ratio: float = 0.55,
         target_flexion: float = 0.62,
         flexion_sigma: float = 0.16,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -541,6 +563,8 @@ class biped_swing_knee_flexion(Reward):
         self.stance_ratio = float(stance_ratio)
         self.target_flexion = float(target_flexion)
         self.flexion_sigma = float(flexion_sigma)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         self.default_knee = self.asset.data.default_joint_pos[:, self.knee_ids].clone()
 
     def _compute(self) -> torch.Tensor:
@@ -558,7 +582,7 @@ class biped_swing_knee_flexion(Reward):
         reward = reward.amin(dim=1, keepdim=True)
         active = (~self.command_manager.is_standing_env) & in_swing.any(
             dim=1, keepdim=True
-        )
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward, active
 
 
@@ -574,6 +598,7 @@ class biped_knee_phase_symmetry(Reward):
         stance_ratio: float = 0.55,
         target_flexion: float = 0.62,
         sigma: float = 0.18,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -586,6 +611,8 @@ class biped_knee_phase_symmetry(Reward):
         self.stance_ratio = float(stance_ratio)
         self.target_flexion = float(target_flexion)
         self.sigma = float(sigma)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
 
     def _compute(self) -> torch.Tensor:
         _, _, swing_phase = _biped_gait_phase(
@@ -600,7 +627,9 @@ class biped_knee_phase_symmetry(Reward):
         reward = torch.exp(-error).amin(dim=1, keepdim=True)
         active = (~self.command_manager.is_standing_env) & (
             swing_phase > 0.0
-        ).any(dim=1, keepdim=True)
+        ).any(dim=1, keepdim=True) & _command_direction_mask(
+            self.command_manager, self.command_direction
+        )
         return reward, active
 
 
@@ -670,6 +699,7 @@ class biped_swing_hip_flexion(Reward):
         stance_ratio: float = 0.55,
         target_flexion: float = 0.28,
         flexion_sigma: float = 0.16,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -682,6 +712,8 @@ class biped_swing_hip_flexion(Reward):
         self.stance_ratio = float(stance_ratio)
         self.target_flexion = float(target_flexion)
         self.flexion_sigma = float(flexion_sigma)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
         if abs(self.target_flexion) <= 0.0 or self.flexion_sigma <= 0.0:
@@ -705,7 +737,7 @@ class biped_swing_hip_flexion(Reward):
         reward = reward.amin(dim=1, keepdim=True)
         active = (~self.command_manager.is_standing_env) & in_swing.any(
             dim=1, keepdim=True
-        )
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward, active
 
 
@@ -723,6 +755,7 @@ class biped_swing_forward(Reward):
         min_step_length: float = 0.08,
         max_step_length: float = 0.45,
         velocity_sigma: float = 0.35,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -735,6 +768,8 @@ class biped_swing_forward(Reward):
         self.min_step_length = float(min_step_length)
         self.max_step_length = float(max_step_length)
         self.velocity_sigma = float(velocity_sigma)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
         if (
@@ -794,7 +829,7 @@ class biped_swing_forward(Reward):
             (~self.command_manager.is_standing_env)
             & (speed > 0.05)
             & in_swing.any(dim=1, keepdim=True)
-        )
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward, active
 
 
@@ -812,6 +847,7 @@ class biped_swing_foot_placement(Reward):
         min_step_length: float = 0.08,
         max_step_length: float = 0.45,
         position_sigma: float = 0.10,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -826,6 +862,8 @@ class biped_swing_foot_placement(Reward):
         self.min_step_length = float(min_step_length)
         self.max_step_length = float(max_step_length)
         self.position_sigma = float(position_sigma)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
         if (
@@ -863,7 +901,7 @@ class biped_swing_foot_placement(Reward):
             (~self.command_manager.is_standing_env)
             & (speed > 0.05)
             & in_swing.any(dim=1, keepdim=True)
-        )
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward, active
 
 
@@ -877,6 +915,7 @@ class biped_stride_limit(Reward):
         body_names: Names,
         max_separation: float = 0.30,
         scale: float = 0.08,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -886,6 +925,8 @@ class biped_stride_limit(Reward):
         self.body_ids = torch.tensor(self.body_ids, device=self.device)
         self.max_separation = float(max_separation)
         self.scale = float(scale)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         if self.max_separation <= 0.0 or self.scale <= 0.0:
             raise ValueError("max_separation and scale must be positive")
 
@@ -907,7 +948,11 @@ class biped_stride_limit(Reward):
         ).abs()
         excess = (separation - self.max_separation).clamp_min(0.0) / self.scale
         penalty = -excess.square().clamp_max(4.0).unsqueeze(1)
-        active = (~self.command_manager.is_standing_env) & (speed > 0.05)
+        active = (
+            (~self.command_manager.is_standing_env)
+            & (speed > 0.05)
+            & _command_direction_mask(self.command_manager, self.command_direction)
+        )
         return penalty, active
 
 
@@ -922,6 +967,7 @@ class biped_stance_foot_velocity(Reward):
         period: float = 0.8,
         stance_ratio: float = 0.55,
         speed_scale: float = 0.5,
+        command_direction: str = "all",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -937,6 +983,8 @@ class biped_stance_foot_velocity(Reward):
         self.period = float(period)
         self.stance_ratio = float(stance_ratio)
         self.speed_scale = float(speed_scale)
+        self.command_direction = command_direction
+        _command_direction_mask(self.command_manager, self.command_direction)
         if self.period <= 0.0 or not 0.0 < self.stance_ratio < 1.0:
             raise ValueError("period must be positive and stance_ratio in (0, 1)")
         if self.speed_scale <= 0.0:
@@ -958,7 +1006,7 @@ class biped_stance_foot_velocity(Reward):
         ).clamp_min(1)
         active = (~self.command_manager.is_standing_env) & stance_contact.any(
             dim=1, keepdim=True
-        )
+        ) & _command_direction_mask(self.command_manager, self.command_direction)
         return reward, active
 
 

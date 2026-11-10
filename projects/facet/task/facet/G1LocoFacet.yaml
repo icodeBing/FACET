@@ -48,21 +48,21 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  # Start from low positive speed with only forward commands. Expand speed and
-  # introduce reverse/stand commands only after nominal FACET velocity tracking
-  # reaches 80% of its maximum reward, following Unitree's reward-gated curriculum.
+  # Expand forward speed gradually while retaining a small amount of backward
+  # and stand data from the beginning. Increase their shares after forward
+  # tracking reaches the curriculum threshold.
   linvel_x_range: [0.20, 0.90]
   backward_linvel_x_range: [-0.50, -0.20]
   backward_prob: 0.15
   velocity_curriculum: true
   velocity_curriculum_initial_x_range: [0.20, 0.35]
-  velocity_curriculum_initial_backward_prob: 0.0
-  velocity_curriculum_initial_stand_prob: 0.0
+  velocity_curriculum_initial_backward_prob: 0.05
+  velocity_curriculum_initial_stand_prob: 0.05
   # facet_track_lin_vel has weight 1.5; 1.2 is 80% of its maximum.
   velocity_curriculum_tracking_threshold: 1.2
   velocity_curriculum_step: 0.0025
-  # Complete forward speed expansion before introducing backward/standing commands.
-  velocity_curriculum_extra_step: 0.005
+  # Finish expanding forward speed before ramping the backward/stand shares.
+  velocity_curriculum_extra_step: 0.02
   linvel_y_range: [0.0, 0.0]
   yawvel_range: [0.0, 0.0]
   # Add explicit standing only after the initial forward gait has had time to
@@ -118,59 +118,8 @@ reward:
       weight: 0.35
       body_name: torso_link
     base_height_exp: {weight: 1.8, target_height: 0.74}
-    # Standing-only terms. They are gated by is_standing_env and therefore do
-    # not alter the existing positive/negative walking objective.
-    facet_stand_joint_posture:
-      _target_: facet_stand_joint_posture
-      weight: 1.00
-      joint_names:
-        - ".*hip_pitch_joint"
-        - ".*hip_roll_joint"
-        - ".*hip_yaw_joint"
-        - ".*knee_joint"
-        - ".*ankle_pitch_joint"
-        - ".*ankle_roll_joint"
-      sigma: 0.22
-    # Unitree's G1 joint_mirror is a separate reward term. Use signed
-    # mirroring around the nominal pose here, gated to standing commands so
-    # it cannot collapse alternating walking legs into the same posture.
-    facet_joint_mirror:
-      _target_: facet_joint_mirror
-      weight: 1.00
-      joint_pairs:
-        - [left_hip_pitch_joint, right_hip_pitch_joint]
-        - [left_hip_roll_joint, right_hip_roll_joint]
-        - [left_hip_yaw_joint, right_hip_yaw_joint]
-        - [left_knee_joint, right_knee_joint]
-        - [left_ankle_pitch_joint, right_ankle_pitch_joint]
-        - [left_ankle_roll_joint, right_ankle_roll_joint]
-      # Pitch and knee axes mirror with the same sign; roll/yaw reverse.
-      mirror_signs: [1.0, -1.0, -1.0, 1.0, 1.0, -1.0]
-      sigma: 0.20
-    facet_stand_foot_width:
-      _target_: facet_stand_foot_width
-      weight: 1.25
-      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      # The nominal G1 reset pose is about 0.237 m between ankle centers.
-      target_separation: 0.23
-      sigma: 0.04
-    facet_stand_foot_pose:
-      _target_: facet_stand_foot_pose
-      weight: 0.90
-      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      # Measured from the pelvis root in the G1 default reset pose.
-      target_fore_aft: -0.026
-      fore_aft_sigma: 0.05
-      stagger_sigma: 0.04
-    facet_stand_foot_contact:
-      _target_: facet_stand_foot_contact
-      weight: 2.00
-      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-    facet_stand_foot_velocity:
-      _target_: facet_stand_foot_velocity
-      weight: 1.00
-      body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
-      sigma: 0.08
+    # Keep zero-speed commands free to choose their balance posture. Retain
+    # root/torso stabilization below, but do not prescribe a fixed foot pose.
     facet_stand_root_motion:
       _target_: facet_stand_root_motion
       weight: 0.80
@@ -260,6 +209,7 @@ reward:
       nominal_height: 0.025
       clearance: 0.08
       height_sigma: 0.040
+      command_direction: forward
     biped_swing_knee_flexion:
       weight: 0.60
       joint_names: ["left_knee_joint", "right_knee_joint"]
@@ -267,6 +217,7 @@ reward:
       stance_ratio: 0.55
       target_flexion: 0.48
       flexion_sigma: 0.20
+      command_direction: forward
     biped_knee_phase_symmetry:
       weight: 0.65
       joint_names: ["left_knee_joint", "right_knee_joint"]
@@ -274,6 +225,7 @@ reward:
       stance_ratio: 0.55
       target_flexion: 0.48
       sigma: 0.18
+      command_direction: forward
     biped_stance_knee_posture:
       weight: 0.80
       joint_names: ["left_knee_joint", "right_knee_joint"]
@@ -289,6 +241,7 @@ reward:
       # forward from the nominal -0.1 rad posture.
       target_flexion: -0.28
       flexion_sigma: 0.16
+      command_direction: forward
     # Low-weight forward swing shaping provides a dense step signal while
     # limiting the requested stride to the commanded walking speed.
     biped_swing_forward:
@@ -302,6 +255,7 @@ reward:
       # Keep headroom for the next 0.45-0.50 m/s curriculum stage.
       max_step_length: 0.42
       velocity_sigma: 0.28
+      command_direction: forward
     biped_swing_foot_placement:
       weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -312,17 +266,20 @@ reward:
       # Do not clip the placement target when command speed is raised.
       max_step_length: 0.40
       position_sigma: 0.10
+      command_direction: forward
     biped_stride_limit:
       weight: 0.75
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       max_separation: 0.30
       scale: 0.08
+      command_direction: forward
     biped_stance_foot_velocity:
       weight: 0.50
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       stance_ratio: 0.55
       speed_scale: 0.35
+      command_direction: forward
     feet_lateral_separation:
       # The new replay improved the median signed gap to 9.8 cm and reduced
       # negative gaps below 1%, but mesh-vertex overlap flags remain in about
@@ -342,6 +299,105 @@ reward:
       body_names: ["left_ankle_roll_link", "right_ankle_roll_link"]
       period: 0.8
       threshold: 0.55
+      command_direction: forward
+    facet_backward_com_velocity_tracking:
+      _target_: facet_backward_com_velocity_tracking
+      weight: 4.00
+      sigma: 0.12
+    facet_backward_straightness:
+      _target_: facet_backward_straightness
+      weight: 1.00
+      lateral_velocity_sigma: 0.10
+      cross_track_sigma: 0.12
+      heading_sigma: 0.12
+    facet_backward_step_symmetry:
+      _target_: facet_backward_step_symmetry
+      weight: 0.80
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      sigma: 0.06
+    # Backward gait shaping uses the weights validated in the isolated task,
+    # with a negative-command mask so the forward policy keeps its own weights.
+    biped_alternating_contact_backward:
+      _target_: biped_alternating_contact
+      weight: 2.75
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      period: 0.8
+      threshold: 0.55
+      command_direction: backward
+    biped_swing_height_backward:
+      _target_: biped_swing_height
+      weight: 1.25
+      body_names: ".*_ankle_roll_link"
+      period: 0.8
+      stance_ratio: 0.55
+      nominal_height: 0.025
+      clearance: 0.065
+      height_sigma: 0.045
+      command_direction: backward
+    biped_swing_knee_flexion_backward:
+      _target_: biped_swing_knee_flexion
+      weight: 0.75
+      joint_names: [left_knee_joint, right_knee_joint]
+      period: 0.8
+      stance_ratio: 0.55
+      target_flexion: 0.48
+      flexion_sigma: 0.20
+      command_direction: backward
+    biped_knee_phase_symmetry_backward:
+      _target_: biped_knee_phase_symmetry
+      weight: 0.75
+      joint_names: [left_knee_joint, right_knee_joint]
+      period: 0.8
+      stance_ratio: 0.55
+      target_flexion: 0.48
+      sigma: 0.18
+      command_direction: backward
+    biped_swing_hip_flexion_backward:
+      _target_: biped_swing_hip_flexion
+      weight: 0.70
+      joint_names: [left_hip_pitch_joint, right_hip_pitch_joint]
+      period: 0.8
+      stance_ratio: 0.55
+      target_flexion: -0.28
+      flexion_sigma: 0.16
+      command_direction: backward
+    biped_swing_forward_backward:
+      _target_: biped_swing_forward
+      weight: 1.20
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      period: 0.8
+      stance_ratio: 0.55
+      min_step_length: 0.08
+      step_length_scale: 0.90
+      max_step_length: 0.25
+      velocity_sigma: 0.18
+      command_direction: backward
+    biped_swing_foot_placement_backward:
+      _target_: biped_swing_foot_placement
+      weight: 1.10
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      period: 0.8
+      stance_ratio: 0.55
+      min_step_length: 0.08
+      step_length_scale: 0.90
+      max_step_length: 0.25
+      position_sigma: 0.075
+      command_direction: backward
+    biped_stride_limit_backward:
+      _target_: biped_stride_limit
+      weight: 1.00
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      max_separation: 0.26
+      scale: 0.06
+      command_direction: backward
+    biped_stance_foot_velocity_backward:
+      _target_: biped_stance_foot_velocity
+      weight: 0.75
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      period: 0.8
+      stance_ratio: 0.55
+      speed_scale: 0.25
+      command_direction: backward
     biped_air_time_target:
       # Each foot must periodically leave and return; this breaks the
       # right-foot-stays-down solution seen in the 0.2 m/s replay.
