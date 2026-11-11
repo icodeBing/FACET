@@ -37,9 +37,9 @@ observation:
 command:
   _target_: ImpedanceCommandManager
   virtual_mass_range: [2., 4., 8.]
-  # FACET reference-model stiffness range. Set both bounds equal during
-  # playback to compare a fixed impedance gain under matched disturbances.
-  linear_kp_range: [2., 30.]
+  # Keep the FACET reference impedance soft enough to yield under a pull while
+  # retaining a stable preview for the gait policy.
+  linear_kp_range: [2., 8.]
   eef_body_name: null
   arm_body_name: null
   # Use the paper-scale preview and smoothing horizon.  A short [1,2,4]
@@ -48,6 +48,20 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
+  # Force-driven locomotion: a bounded external pull is converted to an
+  # admittance velocity, then passed through the normal FACET reference model.
+  force_admittance: true
+  force_drive_prob: 0.35
+  force_drive_x_range: [8., 24.]
+  force_drive_y_range: [0., 0.]
+  force_drive_z_range: [0., 0.]
+  force_drive_duration_range: [1.0, 3.0]
+  # 0 samples both signs during training; override to 1 or -1 for playback.
+  force_drive_direction: 0.0
+  admittance_mass: 4.0
+  admittance_damping: 30.0
+  admittance_stiffness: 0.0
+  admittance_max_speed: 0.80
   # Expand forward speed gradually while retaining backward and stand data
   # from the beginning. Backward commands start at 15% and rise to 20% after
   # forward tracking reaches the curriculum threshold.
@@ -74,11 +88,10 @@ command:
   # The released Unitree gait reward uses a fixed episode phase. Keep the
   # target observable and avoid adding a second source of phase variation.
   randomize_gait_phase: true
-  # Short pelvis impulses are part of this experiment.  The impulse is applied
-  # both to the physical pelvis and to the FACET reference dynamics.
-  # Disturbance robustness is added after nominal walking is stable. External
-  # impulses during this phase make the policy learn survival before gait.
-  disturbance_prob: 0.0
+  # Keep a small independent impulse stream for robustness. In force-admittance
+  # mode these impulses affect only the physical robot and are not double
+  # counted in the FACET reference dynamics.
+  disturbance_prob: 0.01
   disturbance_force_x_range: [80., 200.]
   disturbance_force_y_range: [80., 200.]
   disturbance_force_z_range: [0., 20.]

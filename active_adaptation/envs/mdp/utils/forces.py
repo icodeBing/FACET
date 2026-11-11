@@ -53,6 +53,11 @@ class ConstantForce(TensorClass):
     offset: torch.Tensor
     force: torch.Tensor
 
+    @property
+    def expired(self):
+        """Whether this finite-duration force segment has ended."""
+        return self.time >= self.duration - 1e-4
+
     @classmethod
     def zeros(cls, size: int, device: str):
         return cls(
@@ -81,6 +86,36 @@ class ConstantForce(TensorClass):
             duration=duration,
             time=torch.zeros(size, 1, device=device),
             offset=offset,
+            force=force,
+            batch_size=size,
+        )
+
+    @classmethod
+    def sample_ranges(
+        cls,
+        size: int,
+        device: str,
+        x_range: Tuple[float, float] = (0.0, 0.0),
+        y_range: Tuple[float, float] = (0.0, 0.0),
+        z_range: Tuple[float, float] = (0.0, 0.0),
+        duration_range: Tuple[float, float] = (1.0, 2.0),
+        sign: float = 0.0,
+    ):
+        """Sample signed constant forces with independent magnitude ranges."""
+        duration = torch.empty(size, 1, device=device).uniform_(*duration_range)
+        force = torch.zeros(size, 3, device=device)
+        for axis, bounds in enumerate((x_range, y_range, z_range)):
+            force[:, axis].uniform_(*bounds)
+            if sign > 0.0:
+                force[:, axis].abs_()
+            elif sign < 0.0:
+                force[:, axis].abs_().neg_()
+            else:
+                force[:, axis] *= (torch.rand(size, device=device) - 0.5).sign()
+        return cls(
+            duration=duration,
+            time=torch.zeros(size, 1, device=device),
+            offset=torch.zeros(size, 3, device=device),
             force=force,
             batch_size=size,
         )

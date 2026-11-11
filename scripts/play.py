@@ -573,7 +573,10 @@ class ComTrajectoryOverlay:
             translations=actual_trail
         )
 
-        force = self.command.force_impulse.get_force(None, None)[0].detach()
+        if hasattr(self.command, "current_external_force"):
+            force = self.command.current_external_force[0].detach()
+        else:
+            force = self.command.force_impulse.get_force(None, None)[0].detach()
         force_norm = force.norm()
         if force_norm.item() > 1e-3:
             self.force_marker.set_visibility(True)

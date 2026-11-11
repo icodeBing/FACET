@@ -17,7 +17,7 @@ class facet_external_force_norm(Reward[ImpedanceCommandManager]):
         super().__init__(env, weight, enabled)
 
     def _compute(self) -> torch.Tensor:
-        force = self.command_manager.force_impulse.get_force(None, None)
+        force = self.command_manager.current_external_force
         return force.norm(dim=-1, keepdim=True)
 
 
@@ -27,7 +27,7 @@ class facet_external_force_active(Reward[ImpedanceCommandManager]):
         super().__init__(env, weight, enabled)
 
     def _compute(self) -> torch.Tensor:
-        force = self.command_manager.force_impulse.get_force(None, None)
+        force = self.command_manager.current_external_force
         return (force.norm(dim=-1, keepdim=True) > 1e-5).float()
 
 
@@ -40,7 +40,7 @@ class facet_external_force_component(Reward[ImpedanceCommandManager]):
         self.axis = axis
 
     def _compute(self) -> torch.Tensor:
-        force = self.command_manager.force_impulse.get_force(None, None)
+        force = self.command_manager.current_external_force
         return force[:, self.axis:self.axis + 1]
 
 
@@ -87,10 +87,10 @@ class facet_track_lin_vel(Reward[ImpedanceCommandManager]):
         current = self.asset.data.root_com_lin_vel_w[:, :2]
         error_l2 = (current - command).square().sum(dim=-1, keepdim=True)
         reward = torch.exp(-error_l2 / self.sigma)
-        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
-            dim=-1, keepdim=True
-        ) > 1e-5
-        active = (~self.command_manager.is_standing_env) & (~force_active)
+        # In admittance mode the generated velocity is the locomotion target;
+        # only the separate impulse disturbance suppresses this anchor.
+        force_active = self.command_manager.disturbance_force_active
+        active = ~self.command_manager.is_standing_env & ~force_active
         return reward, active
 
 
@@ -105,9 +105,7 @@ class root_yaw_rate_l2(Reward[ImpedanceCommandManager]):
         current = self.asset.data.root_com_ang_vel_b[:, 2:3]
         target = self.command_manager.cmd_yawvel_b
         error = (current - target).square()
-        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
-            dim=-1, keepdim=True
-        ) > 1e-5
+        force_active = self.command_manager.disturbance_force_active
         active = (~self.command_manager.is_standing_env) & (~force_active)
         return -error, active
 
@@ -123,9 +121,7 @@ class root_lateral_velocity_l2(Reward[ImpedanceCommandManager]):
         current = self.asset.data.root_com_lin_vel_b[:, 1:2]
         target = self.command_manager.cmd_linvel_b[:, 1:2]
         error = (current - target).square()
-        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
-            dim=-1, keepdim=True
-        ) > 1e-5
+        force_active = self.command_manager.disturbance_force_active
         active = (~self.command_manager.is_standing_env) & (~force_active)
         return -error, active
 
@@ -148,9 +144,7 @@ class root_pitch_rate_l2(Reward[ImpedanceCommandManager]):
         )
         pitch_rate = body_ang_vel_b[:, 1:2]
         error = pitch_rate.square()
-        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
-            dim=-1, keepdim=True
-        ) > 1e-5
+        force_active = self.command_manager.disturbance_force_active
         active = (~self.command_manager.is_standing_env) & (~force_active)
         return -error, active
 
@@ -182,9 +176,7 @@ class root_pitch_exp(Reward[ImpedanceCommandManager]):
             self.asset.data.body_quat_w[:, self.body_id]
         )[:, 1:2]
         reward = torch.exp(-((pitch - self.target_pitch) / self.sigma).square())
-        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
-            dim=-1, keepdim=True
-        ) > 1e-5
+        force_active = self.command_manager.disturbance_force_active
         active = (~self.command_manager.is_standing_env) & (~force_active)
         return reward, active
 
@@ -516,9 +508,7 @@ class facet_backward_straightness(Reward[ImpedanceCommandManager]):
         cost = (lateral_velocity / self.lateral_velocity_sigma).square()
         cost += (cross_track_error / self.cross_track_sigma).square()
         cost += (heading_error / self.heading_sigma).square()
-        force_active = self.command_manager.force_impulse.get_force(None, None).norm(
-            dim=-1, keepdim=True
-        ) > 1e-5
+        force_active = self.command_manager.disturbance_force_active
         return -torch.log1p(cost), backward & ~force_active
 
 

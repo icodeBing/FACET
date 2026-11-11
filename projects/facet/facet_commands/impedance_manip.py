@@ -229,6 +229,17 @@ class ImpedanceCommandManager(Command):
         disturbance_force_y_range=(80.0, 200.0),
         disturbance_force_z_range=(0.0, 20.0),
         disturbance_duration_range=(0.4, 0.6),
+        force_admittance: bool = False,
+        force_drive_prob: float = 0.0,
+        force_drive_x_range=(8.0, 25.0),
+        force_drive_y_range=(0.0, 0.0),
+        force_drive_z_range=(0.0, 0.0),
+        force_drive_duration_range=(1.0, 3.0),
+        force_drive_direction: float = 0.0,
+        admittance_mass: float = 4.0,
+        admittance_damping: float = 12.0,
+        admittance_stiffness: float = 0.0,
+        admittance_max_speed: float = 0.8,
     ) -> None:
         super().__init__(env)
 
@@ -343,11 +354,36 @@ class ImpedanceCommandManager(Command):
         self.disturbance_force_y_range = tuple(float(x) for x in disturbance_force_y_range)
         self.disturbance_force_z_range = tuple(float(x) for x in disturbance_force_z_range)
         self.disturbance_duration_range = tuple(float(x) for x in disturbance_duration_range)
+        self.force_admittance = bool(force_admittance)
+        self.force_drive_prob = float(force_drive_prob)
+        self.force_drive_x_range = tuple(float(x) for x in force_drive_x_range)
+        self.force_drive_y_range = tuple(float(x) for x in force_drive_y_range)
+        self.force_drive_z_range = tuple(float(x) for x in force_drive_z_range)
+        self.force_drive_duration_range = tuple(
+            float(x) for x in force_drive_duration_range
+        )
+        self.force_drive_direction = float(force_drive_direction)
+        self.admittance_mass = float(admittance_mass)
+        self.admittance_damping = float(admittance_damping)
+        self.admittance_stiffness = float(admittance_stiffness)
+        self.admittance_max_speed = float(admittance_max_speed)
+        if not 0.0 <= self.force_drive_prob <= 1.0:
+            raise ValueError("`force_drive_prob` must be in [0, 1]")
+        if self.force_drive_direction not in (-1.0, 0.0, 1.0):
+            raise ValueError("`force_drive_direction` must be -1, 0, or 1")
+        if self.admittance_mass <= 0.0 or self.admittance_damping < 0.0:
+            raise ValueError("admittance mass must be positive and damping nonnegative")
+        if self.admittance_stiffness < 0.0 or self.admittance_max_speed <= 0.0:
+            raise ValueError("admittance stiffness must be nonnegative and max speed positive")
         for name, value in (
             ("disturbance_force_x_range", self.disturbance_force_x_range),
             ("disturbance_force_y_range", self.disturbance_force_y_range),
             ("disturbance_force_z_range", self.disturbance_force_z_range),
             ("disturbance_duration_range", self.disturbance_duration_range),
+            ("force_drive_x_range", self.force_drive_x_range),
+            ("force_drive_y_range", self.force_drive_y_range),
+            ("force_drive_z_range", self.force_drive_z_range),
+            ("force_drive_duration_range", self.force_drive_duration_range),
         ):
             if len(value) != 2 or value[0] > value[1]:
                 raise ValueError(f"`{name}` must be an ordered pair")
@@ -373,6 +409,9 @@ class ImpedanceCommandManager(Command):
             self.backward_anchor_pos_w = torch.zeros(self.num_envs, 3)
             # not `setvel`, just to move the setpoint to generate more diverse commands
             self.setpoint_vel_w = torch.zeros(self.num_envs, 3)
+            self.admittance_anchor_w = torch.zeros(self.num_envs, 3)
+            self.admittance_pos_w = torch.zeros(self.num_envs, 3)
+            self.admittance_vel_w = torch.zeros(self.num_envs, 3)
             self.setpoint_b = torch.zeros(self.num_envs, 3 + 3) # translation and rotation
             
             # we only control the translation of the eef
@@ -398,7 +437,7 @@ class ImpedanceCommandManager(Command):
             self.gait_phase_offset = torch.zeros(self.num_envs)
         
         self.force_impulse = ImpulseForce.zeros(self.num_envs, device=self.device)
-        # self.force_pull = ConstantForce.zeros(self.num_envs, device=self.device)
+        self.force_drive = ConstantForce.zeros(self.num_envs, device=self.device)
         
         if self.has_eef:
             path = Path(__file__).parent / "target_archive.pt"
@@ -436,9 +475,11 @@ class ImpedanceCommandManager(Command):
         base_lin_force = (
             lin_kp.reshape(self.num_envs, 1, 1) * base_pos_error
             + lin_kd.reshape(self.num_envs, 1, 1) * base_vel_error
-            # + self.force_pull.get_force(None, None).unsqueeze(1) # for state-dependent force, unused here
-            + self.force_impulse.get_force(None, None).unsqueeze(1) # for state-dependent force, unused here
         )
+        if not self.force_admittance:
+            base_lin_force = base_lin_force + self.force_impulse.get_force(
+                None, None
+            ).unsqueeze(1)
         base_lin_acc = base_lin_force / self.cmd.virtual_mass_base.unsqueeze(1)
         
         base_rpy_error = wrap_to_pi(self.setpoint_w[:, None, 3:6] - self.rot_base.pos_w)
@@ -552,15 +593,18 @@ class ImpedanceCommandManager(Command):
     def pre_step(self, substep: int):
         """Apply the sampled disturbance during every physics substep.
 
-        The environment dispatches command hooks through ``pre_step``.  Keeping
-        this hook named ``step`` means the reference model sees the disturbance
-        while Isaac never receives it, which breaks the FACET closed loop.
+        The environment dispatches command hooks through ``pre_step``.  The
+        physical robot receives both the legacy impulse and, in force-admittance
+        mode, the active drive force; the reference is generated separately by
+        the admittance state below.
         """
         # self.asset._external_force_b[:, self.eef_body_id] += quat_rotate_inverse(
         #     self.asset.data.body_quat_w[:, self.eef_body_id],
         #     self.get_eef_force(self.asset.data.body_pos_w[:, self.eef_body_id], self.asset.data.body_lin_vel_w[:, self.eef_body_id])
         # )
         force_base_w = self.force_impulse.get_force(None, None)
+        if self.force_admittance:
+            force_base_w = force_base_w + self.force_drive.get_force(None, None)
         self.asset._external_force_b[:, 0] += quat_rotate_inverse(
             self.asset.data.root_link_quat_w,
             force_base_w
@@ -568,6 +612,9 @@ class ImpedanceCommandManager(Command):
         self.asset.has_external_wrench = True
 
     def reset(self, env_ids: torch.Tensor):
+        self.force_drive.time[env_ids] = 0.0
+        self.force_drive.duration[env_ids] = 0.0
+        self.force_drive.force[env_ids] = 0.0
         if self.randomize_gait_phase:
             self.gait_phase_offset[env_ids] = torch.randint(
                 0, 2, (len(env_ids),), device=self.device
@@ -581,6 +628,9 @@ class ImpedanceCommandManager(Command):
         root_link_rpy = euler_from_quat(self.asset.data.root_link_quat_w[env_ids])
         self.stand_anchor_pos_w[env_ids] = root_link_pos
         self.backward_anchor_pos_w[env_ids] = root_link_pos
+        self.admittance_anchor_w[env_ids] = root_link_pos
+        self.admittance_pos_w[env_ids] = root_link_pos
+        self.admittance_vel_w[env_ids] = 0.0
         self.pos_base.pos_w[env_ids] = root_link_pos.unsqueeze(1)
         self.pos_base.vel_w[env_ids] = self.asset.data.root_com_lin_vel_w[env_ids].unsqueeze(1)
         self.rot_base.pos_w[env_ids] = root_link_rpy.unsqueeze(1)
@@ -619,8 +669,15 @@ class ImpedanceCommandManager(Command):
             ],
         )
         if self.fixed_velocity:
-            self._sample_velocity(env_ids)
-            self._set_velocity_target(env_ids)
+            if self.force_admittance:
+                self.cmd_linvel_b[env_ids] = 0.0
+                self.cmd_linvel_w[env_ids] = 0.0
+                self.cmd_yawvel_b[env_ids] = 0.0
+                self.is_standing_env[env_ids] = True
+                self._sync_admittance_command(env_ids)
+            else:
+                self._sample_velocity(env_ids)
+                self._set_velocity_target(env_ids)
     
     def update(self):
         self.seed = wp.rand_init(self.seed)
@@ -650,13 +707,13 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.cmd.virtual_mass_base, dtype=wp.float32, return_ctype=True),
             ],
         )
-        if self.fixed_velocity:
+        if not self.force_admittance and self.fixed_velocity:
             self.command_heading_w.add_(
                 self.cmd_yawvel_b[:, 0] * self.env.step_dt
             )
             self.command_heading_w.copy_(wrap_to_pi(self.command_heading_w))
             self._update_velocity_command(mask)
-        else:
+        elif not self.force_admittance:
             self.setpoint_w[:, :3] += self.setpoint_vel_w * self.env.step_dt
         
         if self.has_eef:
@@ -720,6 +777,29 @@ class ImpedanceCommandManager(Command):
             self.disturbance_duration_range,
         )
         self.force_impulse = impulse_force.where(resample, self.force_impulse)
+
+        self.force_drive.time.add_(self.env.step_dt)
+        drive_resample = self.force_drive.expired & (
+            torch.rand(self.num_envs, 1, device=self.device) < self.force_drive_prob
+        )
+        drive_force = ConstantForce.sample_ranges(
+            self.num_envs,
+            self.device,
+            self.force_drive_x_range,
+            self.force_drive_y_range,
+            self.force_drive_z_range,
+            self.force_drive_duration_range,
+            self.force_drive_direction,
+        )
+        # Force-drive ranges are robot-frame commands; apply the sampled pull
+        # in world coordinates at the heading active when the segment starts.
+        drive_force.force = yaw_rotate(
+            self.root_link_rpy_w[:, 2], drive_force.force
+        )
+        self.force_drive = drive_force.where(drive_resample, self.force_drive)
+        if self.force_admittance:
+            self._integrate_admittance(self.env.step_dt)
+            self._sync_admittance_command(torch.arange(self.num_envs, device=self.device))
 
         self.reference_dynamics(self.env.step_dt)
 
@@ -869,9 +949,13 @@ class ImpedanceCommandManager(Command):
         lin_kd = self.cmd.kd_base[env_ids, 0:1]
         ang_kp = self.cmd.kp_base[env_ids, 1:2]
         ang_kd = self.cmd.kd_base[env_ids, 1:2]
-        moving_target = (
-            self.asset.data.root_com_pos_w[env_ids]
-            + self.cmd_linvel_w[env_ids] * (lin_kd / lin_kp.clamp_min(1e-6))
+        base_pos = (
+            self.admittance_pos_w[env_ids]
+            if self.force_admittance
+            else self.asset.data.root_com_pos_w[env_ids]
+        )
+        moving_target = base_pos + self.cmd_linvel_w[env_ids] * (
+            lin_kd / lin_kp.clamp_min(1e-6)
         )
         self.setpoint_w[env_ids, :3] = torch.where(
             self.is_standing_env[env_ids],
@@ -885,6 +969,60 @@ class ImpedanceCommandManager(Command):
             * ang_kd[:, 0]
             / ang_kp[:, 0].clamp_min(1e-6)
         )
+
+    def _integrate_admittance(self, dt: float):
+        """Integrate a bounded force-to-motion admittance in world coordinates."""
+        force = self.force_drive.get_force(None, None)
+        displacement = self.admittance_pos_w - self.admittance_anchor_w
+        acceleration = (
+            force
+            - self.admittance_damping * self.admittance_vel_w
+            - self.admittance_stiffness * displacement
+        ) / self.admittance_mass
+        self.admittance_vel_w.add_(acceleration * dt)
+        self.admittance_vel_w[:, 2] = 0.0
+        self.admittance_vel_w[:, :2] = clamp_norm(
+            self.admittance_vel_w[:, :2], max=self.admittance_max_speed
+        )
+        self.admittance_pos_w.add_(self.admittance_vel_w * dt)
+        self.setpoint_w[:, :3] = self.admittance_pos_w
+        self.setpoint_w[:, 2] = self.asset.data.root_com_pos_w[:, 2]
+
+    def _sync_admittance_command(self, env_ids: torch.Tensor):
+        """Expose admittance velocity through the normal locomotion command fields."""
+        if env_ids.numel() == 0:
+            return
+        yaw = yaw_quat(self.asset.data.root_quat_w[env_ids])
+        vel_w = self.admittance_vel_w[env_ids]
+        vel_b = quat_rotate_inverse(yaw, vel_w)
+        self.cmd_linvel_w[env_ids] = vel_w
+        self.cmd_linvel_b[env_ids] = vel_b
+        self.cmd_yawvel_b[env_ids] = 0.0
+        self.command_heading_w[env_ids] = self.root_link_rpy_w[env_ids, 2]
+        self.command_speed[env_ids] = vel_b[:, :2].norm(dim=-1, keepdim=True)
+        was_standing = self.is_standing_env[env_ids].clone()
+        standing = (
+            self.command_speed[env_ids] < self.stand_speed_threshold
+        )
+        self.is_standing_env[env_ids] = standing
+        newly_standing = standing & ~was_standing
+        if newly_standing.any():
+            stand_ids = env_ids[newly_standing.squeeze(-1)]
+            self.stand_anchor_pos_w[stand_ids] = self.asset.data.root_com_pos_w[stand_ids]
+        self._set_velocity_target(env_ids)
+
+    @property
+    def current_external_force(self) -> torch.Tensor:
+        force = self.force_impulse.get_force(None, None)
+        if self.force_admittance:
+            force = force + self.force_drive.get_force(None, None)
+        return force
+
+    @property
+    def disturbance_force_active(self) -> torch.Tensor:
+        return self.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
 
     def _update_velocity_command(self, resample_mask: torch.Tensor):
         env_ids = resample_mask.nonzero().squeeze(-1)
