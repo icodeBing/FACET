@@ -48,15 +48,15 @@ command:
   ref_steps: [8, 16, 32]
   temporal_smoothing: 32
   fixed_velocity: true
-  # Expand forward speed gradually while retaining a small amount of backward
-  # and stand data from the beginning. Increase their shares after forward
-  # tracking reaches the curriculum threshold.
+  # Expand forward speed gradually while retaining backward and stand data
+  # from the beginning. Backward commands start at 15% and rise to 20% after
+  # forward tracking reaches the curriculum threshold.
   linvel_x_range: [0.20, 0.90]
   backward_linvel_x_range: [-0.50, -0.20]
-  backward_prob: 0.15
+  backward_prob: 0.20
   velocity_curriculum: true
   velocity_curriculum_initial_x_range: [0.20, 0.35]
-  velocity_curriculum_initial_backward_prob: 0.05
+  velocity_curriculum_initial_backward_prob: 0.15
   velocity_curriculum_initial_stand_prob: 0.05
   # facet_track_lin_vel has weight 1.5; 1.2 is 80% of its maximum.
   velocity_curriculum_tracking_threshold: 1.2
