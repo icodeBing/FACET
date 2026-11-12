@@ -42,7 +42,11 @@ def main(cfg: DictConfig):
     )
 
     if aa.is_main_process():
+        # W&B creates its wandb/ subdirectory under dir; anchor it to this
+        # script so Hydra's working directory and WANDB_DIR cannot move it.
+        (FILE_PATH / "wandb").mkdir(parents=True, exist_ok=True)
         run = wandb.init(
+            dir=str(FILE_PATH),
             job_type=cfg.wandb.job_type,
             project=cfg.wandb.project,
             mode=cfg.wandb.mode,
@@ -59,12 +63,16 @@ def main(cfg: DictConfig):
         run.name = f"{run_idx}-{default_run_name}"
         setproctitle(run.name)
 
-        run_dir = Path(run.dir)
+        # Disabled W&B runs may report a /tmp run.dir even with dir set.
+        # Choose the checkpoint directory ourselves in every W&B mode.
+        run_dir = FILE_PATH / "wandb" / (
+            f"run-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{run.id}"
+        ) / "files"
         run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Checkpoint directory: {run_dir}")
         cfg_save_path = run_dir / "cfg.yaml"
         OmegaConf.save(cfg, cfg_save_path)
-        run.save(str(cfg_save_path), policy="now")
-        run.save(str(run_dir / "config.yaml"), policy="now")
+        run.save(str(cfg_save_path), policy="now", base_path=str(run_dir))
 
     from active_adaptation.helpers import make_env_policy, evaluate
     from active_adaptation.utils.helpers import EpisodeStats
@@ -91,7 +99,6 @@ def main(cfg: DictConfig):
     episode_stats = EpisodeStats(stats_keys, device=env.device)
 
     def save(policy, checkpoint_name: str, *, upload_to_wandb: bool = True):
-        run_dir = Path(run.dir)
         ckpt_path = run_dir / f"{checkpoint_name}.pt"
         state_dict = OrderedDict()
         state_dict["wandb"] = {"name": run.name, "id": run.id}
@@ -99,7 +106,7 @@ def main(cfg: DictConfig):
         
         torch.save(state_dict, ckpt_path)
         if upload_to_wandb:
-            run.save(str(ckpt_path), policy="now", base_path=run.dir)
+            run.save(str(ckpt_path), policy="now", base_path=str(run_dir))
         
         latest_link = run_dir / "checkpoint_latest.pt"
         if latest_link.exists() or latest_link.is_symlink():

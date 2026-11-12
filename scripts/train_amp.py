@@ -64,7 +64,11 @@ def main(cfg: DictConfig):
     #     print(f"Loaded policy from checkpoint: {checkpoint_path}")
     
     if aa.is_main_process():
+        # Keep training checkpoints under scripts/wandb on every machine.
+        scripts_dir = Path(__file__).resolve().parent
+        (scripts_dir / "wandb").mkdir(parents=True, exist_ok=True)
         run = wandb.init(
+            dir=str(scripts_dir),
             job_type=cfg.wandb.job_type,
             project=cfg.wandb.project,
             mode=cfg.wandb.mode,
@@ -74,9 +78,15 @@ def main(cfg: DictConfig):
         run.config["world_size"] = aa.get_world_size()
         
         default_run_name = f"{cfg.exp_name}-{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}"
-        run_idx = run.name.split("-")[-1]
+        run_idx = (run.name or run.id or "local").split("-")[-1]
         run.name = f"{run_idx}-{default_run_name}"
         setproctitle(run.name)
+        # Do not use run.dir: disabled W&B runs may put it under /tmp.
+        run_dir = scripts_dir / "wandb" / (
+            f"run-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{run.id}"
+        ) / "files"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Checkpoint directory: {run_dir}")
 
     from active_adaptation.utils.helpers import EpisodeStats
     stats_keys = [
@@ -88,7 +98,7 @@ def main(cfg: DictConfig):
     print(f"Log interval: {log_interval} steps")
 
     def save(policy, checkpoint_name: str):
-        ckpt_path = Path(run.dir) / f"{checkpoint_name}.pt"
+        ckpt_path = run_dir / f"{checkpoint_name}.pt"
         state_dict = OrderedDict()
         state_dict["wandb"] = {"name": run.name, "id": run.id}
         state_dict["policy"] = policy.state_dict()
