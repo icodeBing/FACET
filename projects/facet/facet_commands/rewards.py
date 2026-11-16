@@ -7,6 +7,7 @@ from active_adaptation.utils.math import (
     euler_from_quat,
     quat_rotate_inverse,
     yaw_quat,
+    quat_from_yaw,
 )
 from .impedance_manip import ImpedanceCommandManager
 
@@ -437,7 +438,7 @@ class facet_stand_root_position(Reward[ImpedanceCommandManager]):
 
 
 class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
-    """Track the signed backward CoM velocity in the robot yaw frame."""
+    """Track signed backward CoM velocity in the fixed task-heading frame."""
 
     def __init__(
         self,
@@ -452,9 +453,9 @@ class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
             raise ValueError("backward velocity sigma must be positive")
 
     def _compute(self):
-        command = self.command_manager.cmd_linvel_b[:, 0:1]
-        actual = self.asset.data.root_com_lin_vel_b[:, 0:1]
-        backward = command < -self.command_manager.stand_speed_threshold
+        command = self.command_manager.cmd_linvel_h[:, 0:1]
+        actual = _actual_com_linvel_h(self.command_manager, self.asset)[:, 0:1]
+        backward = _backward_command_mask(self.command_manager)
         error = (actual - command) / self.sigma
         reward = torch.exp(-error.square())
         return reward, backward
@@ -485,11 +486,10 @@ class facet_backward_straightness(Reward[ImpedanceCommandManager]):
             raise ValueError("backward straightness sigmas must be positive")
 
     def _compute(self):
-        backward = (
-            self.command_manager.cmd_linvel_b[:, 0:1]
-            < -self.command_manager.stand_speed_threshold
-        )
-        lateral_velocity = self.asset.data.root_com_lin_vel_b[:, 1:2]
+        backward = _backward_command_mask(self.command_manager)
+        lateral_velocity = _actual_com_linvel_h(
+            self.command_manager, self.asset
+        )[:, 1:2]
 
         delta_w = (
             self.asset.data.root_com_pos_w
@@ -508,8 +508,10 @@ class facet_backward_straightness(Reward[ImpedanceCommandManager]):
         cost = (lateral_velocity / self.lateral_velocity_sigma).square()
         cost += (cross_track_error / self.cross_track_sigma).square()
         cost += (heading_error / self.heading_sigma).square()
-        force_active = self.command_manager.disturbance_force_active
-        return -torch.log1p(cost), backward & ~force_active
+        # Straightness must be learned while the pull is active.  Disabling
+        # this term during force application lets the policy rotate until a
+        # backward pull appears as a forward body-frame command.
+        return -torch.log1p(cost), backward
 
 
 class _BackwardStraightnessDiagnostic(Reward[ImpedanceCommandManager]):
@@ -520,12 +522,11 @@ class _BackwardStraightnessDiagnostic(Reward[ImpedanceCommandManager]):
         self.component = component
 
     def _compute(self):
-        backward = (
-            self.command_manager.cmd_linvel_b[:, 0:1]
-            < -self.command_manager.stand_speed_threshold
-        )
+        backward = _backward_command_mask(self.command_manager)
         if self.component == "lateral_velocity":
-            value = self.asset.data.root_com_lin_vel_b[:, 1:2].abs()
+            value = _actual_com_linvel_h(
+                self.command_manager, self.asset
+            )[:, 1:2].abs()
         elif self.component == "cross_track":
             delta_w = (
                 self.asset.data.root_com_pos_w
@@ -653,8 +654,8 @@ class facet_backward_step_symmetry(Reward[ImpedanceCommandManager]):
 
     def _compute(self):
         episode_step = self.env.episode_length_buf
-        command = self.command_manager.cmd_linvel_b[:, :2]
-        backward = command[:, 0:1] < -self.command_manager.stand_speed_threshold
+        command = self.command_manager.cmd_linvel_h[:, :2]
+        backward = _backward_command_mask(self.command_manager)
         reset = (self.last_episode_step >= 0) & (
             episode_step < self.last_episode_step
         )
@@ -669,14 +670,14 @@ class facet_backward_step_symmetry(Reward[ImpedanceCommandManager]):
         touchdown = self.contact_sensor.compute_first_contact(self.env.step_dt)[
             :, self.contact_ids
         ].bool()
-        root_yaw = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        task_yaw = quat_from_yaw(self.command_manager.command_heading_w)
         command_dir = command / command.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
         for foot_index in range(2):
             event = touchdown[:, foot_index]
             previous_valid = self.has_touchdown[:, foot_index] & event
             delta_w = feet_w[:, foot_index] - self.last_touchdown_w[:, foot_index]
-            delta_b = quat_rotate_inverse(root_yaw.squeeze(1), delta_w)
+            delta_b = quat_rotate_inverse(task_yaw, delta_w)
             stride = (delta_b[:, :2] * command_dir).sum(dim=-1).clamp_min(0.0)
             self.last_stride[:, foot_index] = torch.where(
                 previous_valid, stride, self.last_stride[:, foot_index]
@@ -754,16 +755,15 @@ class facet_command_actual_vel_error(Reward[ImpedanceCommandManager]):
 
 
 class facet_backward_actual_com_linvel_b_x(Reward[ImpedanceCommandManager]):
-    """Diagnostic: actual forward-axis CoM velocity on backward commands."""
+    """Diagnostic: actual task-axis CoM velocity on backward commands."""
 
     def __init__(self, env, weight: float = 1.0, enabled: bool = False):
         super().__init__(env, weight, enabled)
         self.asset = self.command_manager.asset
 
     def _compute(self):
-        command = self.command_manager.cmd_linvel_b[:, 0:1]
-        backward = command < -self.command_manager.stand_speed_threshold
-        return self.asset.data.root_com_lin_vel_b[:, 0:1], backward
+        backward = _backward_command_mask(self.command_manager)
+        return _actual_com_linvel_h(self.command_manager, self.asset)[:, 0:1], backward
 
 
 class facet_backward_actual_com_linvel_b_x_error(Reward[ImpedanceCommandManager]):
@@ -774,9 +774,9 @@ class facet_backward_actual_com_linvel_b_x_error(Reward[ImpedanceCommandManager]
         self.asset = self.command_manager.asset
 
     def _compute(self):
-        command = self.command_manager.cmd_linvel_b[:, 0:1]
-        actual = self.asset.data.root_com_lin_vel_b[:, 0:1]
-        backward = command < -self.command_manager.stand_speed_threshold
+        command = self.command_manager.cmd_linvel_h[:, 0:1]
+        actual = _actual_com_linvel_h(self.command_manager, self.asset)[:, 0:1]
+        backward = _backward_command_mask(self.command_manager)
         return (actual - command).abs(), backward
 
 
@@ -796,6 +796,18 @@ def _reference_linvel_b(command_manager: ImpedanceCommandManager, asset):
     """Convert the world-frame FACET velocity preview to the yaw body frame."""
     yaw = yaw_quat(asset.data.root_link_quat_w).unsqueeze(1)
     return quat_rotate_inverse(yaw, command_manager.surr_lin_vel_target)
+
+
+def _actual_com_linvel_h(command_manager: ImpedanceCommandManager, asset):
+    """Project CoM velocity into the fixed task-heading frame."""
+    return quat_rotate_inverse(
+        quat_from_yaw(command_manager.command_heading_w),
+        asset.data.root_com_lin_vel_w,
+    )
+
+
+def _backward_command_mask(command_manager: ImpedanceCommandManager):
+    return command_manager.cmd_linvel_h[:, 0:1] < -command_manager.stand_speed_threshold
 
 
 class facet_command_linvel_b_x(Reward[ImpedanceCommandManager]):

@@ -11,6 +11,7 @@ from active_adaptation.utils.math import (
     wrap_to_pi,
     euler_from_quat,
     quat_from_euler_xyz,
+    quat_from_yaw,
     yaw_rotate,
 )
 
@@ -164,10 +165,17 @@ def sample_command_world(
 
     pos_offset_xy = wp.sample_unit_ring(seed_) * wp.randf(seed_, 0.5, 1.5)
     setpoint_pos_w[tid] = root_link_pos_w[tid] + wp.vec3(pos_offset_xy.x, pos_offset_xy.y, 0.0)
-    setpoint_rpy_w[tid] = wp.vec3(0., 0., 0.)
+    # Keep the sampled heading in the episode's world frame.  A hard-coded
+    # zero here creates a hidden yaw target toward global +x for any episode
+    # initialized at a different heading.
+    setpoint_rpy_w[tid] = wp.vec3(0., 0., root_link_rpy_w[tid].z)
     
     if wp.randf(seed_, 0., 1.0) < 0.5:
         setpoint_vel_w[tid] = wp.vec3(wp.randf(seed_, 0.5, 1.5), 0., 0.)
+    else:
+        # Do not leave a previous env's setpoint velocity in the output when
+        # this sample is meant to be stationary.
+        setpoint_vel_w[tid] = wp.vec3(0., 0., 0.)
     
     kp_base[tid] = wp.vec2(lin_kp, ang_kp)
     kd_base[tid] = wp.vec2(lin_kd, ang_kd)
@@ -239,6 +247,7 @@ class ImpedanceCommandManager(Command):
         force_drive_duration_range=(1.0, 3.0),
         force_drive_direction: float = 0.0,
         force_drive_once: bool = False,
+        stand_on_force_release: bool = False,
     ) -> None:
         super().__init__(env)
 
@@ -369,6 +378,7 @@ class ImpedanceCommandManager(Command):
         )
         self.force_drive_direction = float(force_drive_direction)
         self.force_drive_once = bool(force_drive_once)
+        self.stand_on_force_release = bool(stand_on_force_release)
         if not 0.0 <= self.force_drive_prob <= 1.0:
             raise ValueError("`force_drive_prob` must be in [0, 1]")
         if self.force_drive_direction not in (-1.0, 0.0, 1.0):
@@ -427,6 +437,9 @@ class ImpedanceCommandManager(Command):
             self.command_speed = torch.zeros(self.num_envs, 1)
             self.cmd_linvel_b = torch.zeros(self.num_envs, 3)
             self.cmd_linvel_w = torch.zeros(self.num_envs, 3)
+            # FACET preview velocity expressed in the fixed task-heading frame.
+            # Unlike cmd_linvel_b, its sign cannot change when the robot yaws.
+            self.cmd_linvel_h = torch.zeros(self.num_envs, 3)
             self.cmd_yawvel_b = torch.zeros(self.num_envs, 1)
             self.cmd_base_height = torch.full((self.num_envs, 1), 0.74)
             self.gait_phase_offset = torch.zeros(self.num_envs)
@@ -434,6 +447,12 @@ class ImpedanceCommandManager(Command):
         self.force_impulse = ImpulseForce.zeros(self.num_envs, device=self.device)
         self.force_drive = ConstantForce.zeros(self.num_envs, device=self.device)
         self.force_drive_started = torch.zeros(
+            self.num_envs, 1, dtype=torch.bool, device=self.device
+        )
+        self.force_was_active = torch.zeros(
+            self.num_envs, 1, dtype=torch.bool, device=self.device
+        )
+        self.force_release_standing = torch.zeros(
             self.num_envs, 1, dtype=torch.bool, device=self.device
         )
         
@@ -612,6 +631,8 @@ class ImpedanceCommandManager(Command):
         self.force_drive.duration[env_ids] = 0.0
         self.force_drive.force[env_ids] = 0.0
         self.force_drive_started[env_ids] = False
+        self.force_was_active[env_ids] = False
+        self.force_release_standing[env_ids] = False
         if self.randomize_gait_phase:
             self.gait_phase_offset[env_ids] = torch.randint(
                 0, 2, (len(env_ids),), device=self.device
@@ -664,6 +685,10 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.cmd.virtual_mass_base, dtype=wp.float32, return_ctype=True),
             ],
         )
+        # Preserve the episode's initial heading.  The world sampler writes
+        # roll/pitch/yaw defaults, but a zero world yaw is not a valid target
+        # for an episode that starts at another heading.
+        self.setpoint_w[env_ids, 5] = self.command_heading_w[env_ids]
         if self.fixed_velocity:
             self._sample_velocity(env_ids)
             self._set_velocity_target(env_ids)
@@ -698,6 +723,10 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.cmd.virtual_mass_base, dtype=wp.float32, return_ctype=True),
             ],
         )
+        if not self.fixed_velocity:
+            # Resampling the translational setpoint must not change the fixed
+            # heading used to interpret force direction and backward gait.
+            self.setpoint_w[:, 5] = self.command_heading_w
         if self.fixed_velocity:
             self.command_heading_w.add_(
                 self.cmd_yawvel_b[:, 0] * self.env.step_dt
@@ -784,13 +813,36 @@ class ImpedanceCommandManager(Command):
             self.force_drive_duration_range,
             self.force_drive_direction,
         )
-        # Force-drive ranges are robot-frame commands; apply the sampled pull
-        # in world coordinates at the heading active when the segment starts.
+        # Force-drive ranges are robot-frame commands.  Convert only the newly
+        # sampled force once, using the fixed episode heading.  Re-rotating the
+        # stored world-frame force every update makes its direction follow the
+        # robot and can create the exact turn-to-face-force behavior this task
+        # is meant to prevent.
         drive_force.force = yaw_rotate(
-            self.root_link_rpy_w[:, 2], drive_force.force
+            self.command_heading_w, drive_force.force
         )
         self.force_drive = drive_force.where(drive_resample, self.force_drive)
         self.force_drive_started |= drive_resample
+        force_active = self.current_external_force.norm(dim=-1, keepdim=True) > 1e-5
+        released = self.force_was_active & ~force_active
+        if self.stand_on_force_release:
+            self.force_release_standing |= released
+            # A new pull starts a new locomotion segment.  Do not keep the
+            # previous release latch when that happens.
+            self.force_release_standing &= ~force_active
+            if released.any():
+                released_ids = released[:, 0].nonzero().squeeze(-1)
+                self.stand_anchor_pos_w[released_ids] = (
+                    self.asset.data.root_com_pos_w[released_ids]
+                )
+                self.backward_anchor_pos_w[released_ids] = (
+                    self.asset.data.root_com_pos_w[released_ids]
+                )
+                self.setpoint_w[released_ids, :3] = (
+                    self.asset.data.root_com_pos_w[released_ids]
+                )
+                self.setpoint_vel_w[released_ids] = 0.0
+        self.force_was_active.copy_(force_active)
         self.reference_dynamics(self.env.step_dt)
 
         # Expose only the FACET reference velocity to gait-shaping terms.  It
@@ -802,10 +854,14 @@ class ImpedanceCommandManager(Command):
         ref_vel_b = quat_rotate_inverse(yaw_quat(self.asset.data.root_quat_w), ref_vel_w)
         self.cmd_linvel_w.copy_(ref_vel_w)
         self.cmd_linvel_b.copy_(ref_vel_b)
+        self.cmd_linvel_h.copy_(quat_rotate_inverse(
+            quat_from_yaw(self.command_heading_w), ref_vel_w
+        ))
         self.cmd_yawvel_b.copy_(self.rot_base.vel_w[:, 0, 2:3])
         self.command_speed.copy_(ref_vel_b[:, :2].norm(dim=-1, keepdim=True))
         self.is_standing_env.copy_(
-            self.command_speed < self.stand_speed_threshold
+            (self.command_speed < self.stand_speed_threshold)
+            | self.force_release_standing
         )
 
         self.surr_pos_target = self.pos_base.pos_w[:, self.ref_steps]

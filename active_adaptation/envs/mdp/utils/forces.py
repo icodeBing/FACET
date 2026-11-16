@@ -111,7 +111,14 @@ class ConstantForce(TensorClass):
             elif sign < 0.0:
                 force[:, axis].abs_().neg_()
             else:
-                force[:, axis] *= (torch.rand(size, device=device) - 0.5).sign()
+                # Keep sign sampling explicit; the exact midpoint should not
+                # create a rare unintended zero-force segment.
+                sign_sample = torch.where(
+                    torch.rand(size, device=device) < 0.5,
+                    -torch.ones(size, device=device),
+                    torch.ones(size, device=device),
+                )
+                force[:, axis] *= sign_sample
         return cls(
             duration=duration,
             time=torch.zeros(size, 1, device=device),

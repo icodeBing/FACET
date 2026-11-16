@@ -18,7 +18,9 @@ def _command_direction_mask(command_manager, direction: str):
         raise ValueError("command_direction must be all, forward, or backward")
     if direction == "all":
         return True
-    command_x = command_manager.cmd_linvel_b[:, 0:1]
+    command_x = getattr(
+        command_manager, "cmd_linvel_h", command_manager.cmd_linvel_b
+    )[:, 0:1]
     threshold = command_manager.stand_speed_threshold
     if direction == "forward":
         return command_x > threshold
@@ -728,7 +730,11 @@ class biped_swing_hip_flexion(Reward):
         # G1's positive body-x command uses a negative hip displacement for
         # forward swing. Reverse that displacement for a negative command so
         # the same phase schedule also produces a genuine backward gait.
-        direction = self.command_manager.cmd_linvel_b[:, 0:1].sign()
+        direction = getattr(
+            self.command_manager,
+            "cmd_linvel_h",
+            self.command_manager.cmd_linvel_b,
+        )[:, 0:1].sign()
         target = self.default + self.target_flexion * direction * torch.sin(
             torch.pi * swing_phase
         )

@@ -51,7 +51,8 @@ command:
   temporal_smoothing: 32
   fixed_velocity: false
   # Force-driven locomotion: the sampled rope force is applied directly to the
-  # physical pelvis and to the same FACET reference dynamics.
+  # physical pelvis and to the same FACET reference dynamics.  Its direction
+  # is fixed in the episode heading frame during each finite force segment.
   force_drive_prob: 0.50
   force_drive_x_range: [8., 24.]
   force_drive_y_range: [0., 0.]
@@ -60,6 +61,9 @@ command:
   # 0 samples both signs during training; override to 1 or -1 for playback.
   force_drive_direction: 0.0
   force_drive_once: false
+  # After a finite pull ends, hold the release position and enter the
+  # zero-velocity objective instead of carrying residual reference momentum.
+  stand_on_force_release: true
   # The manager derives this mask from the FACET reference velocity; it is not
   # a sampled stand command.
   stand_speed_threshold: 0.02
@@ -290,13 +294,14 @@ reward:
       command_direction: forward
     facet_backward_com_velocity_tracking:
       _target_: facet_backward_com_velocity_tracking
-      weight: 0.0
+      # Direct signed backward-speed tracking must be active during the pull.
+      weight: 1.0
       sigma: 0.12
     facet_backward_straightness:
       _target_: facet_backward_straightness
       # Conditional straightness gate now uses the signed FACET reference
       # velocity, rather than a sampled backward command.
-      weight: 1.00
+      weight: 1.50
       lateral_velocity_sigma: 0.10
       cross_track_sigma: 0.12
       heading_sigma: 0.12
