@@ -457,7 +457,9 @@ class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
         actual = _actual_com_linvel_h(self.command_manager, self.asset)[:, 0:1]
         backward = _backward_command_mask(self.command_manager)
         error = (actual - command) / self.sigma
-        reward = torch.exp(-error.square())
+        # Keep a useful gradient when the policy walks forward against a
+        # backward target. exp(-error^2) saturates at zero in that case.
+        reward = -torch.log1p(error.square())
         return reward, backward
 
 

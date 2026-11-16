@@ -842,6 +842,11 @@ class ImpedanceCommandManager(Command):
                     self.asset.data.root_com_pos_w[released_ids]
                 )
                 self.setpoint_vel_w[released_ids] = 0.0
+                # Remove residual virtual-reference momentum at the release
+                # transition. Otherwise the standing reward is enabled one
+                # step too late and the preview keeps walking after release.
+                self.pos_base.vel_w[released_ids] = 0.0
+                self.pos_base.acc_w[released_ids] = 0.0
         self.force_was_active.copy_(force_active)
         self.reference_dynamics(self.env.step_dt)
 

@@ -53,14 +53,16 @@ command:
   # Force-driven locomotion: the sampled rope force is applied directly to the
   # physical pelvis and to the same FACET reference dynamics.  Its direction
   # is fixed in the episode heading frame during each finite force segment.
-  force_drive_prob: 0.50
+  force_drive_prob: 1.0
   force_drive_x_range: [8., 24.]
   force_drive_y_range: [0., 0.]
   force_drive_z_range: [0., 0.]
   force_drive_duration_range: [1.0, 3.0]
   # 0 samples both signs during training; override to 1 or -1 for playback.
   force_drive_direction: 0.0
-  force_drive_once: false
+  # Guarantee a force-release interval in every episode so standing after
+  # the pull is represented during training.
+  force_drive_once: true
   # After a finite pull ends, hold the release position and enter the
   # zero-velocity objective instead of carrying residual reference momentum.
   stand_on_force_release: true
@@ -113,14 +115,14 @@ reward:
     # root/torso stabilization below, but do not prescribe a fixed foot pose.
     facet_stand_root_motion:
       _target_: facet_stand_root_motion
-      weight: 0.80
+      weight: 3.0
       linear_sigma: 0.08
       angular_sigma: 0.20
     facet_stand_root_position:
       _target_: facet_stand_root_position
-      # Kp=0 means the reference may settle at the displaced position after
-      # release; do not pull the robot back to its pre-pull anchor.
-      weight: 0.0
+      # The anchor is rebased at force release, so this penalizes post-release
+      # drift without pulling the robot back toward its pre-pull position.
+      weight: 2.0
       position_sigma: 0.08
     facet_stand_torso_stability:
       _target_: facet_stand_torso_stability
@@ -295,13 +297,13 @@ reward:
     facet_backward_com_velocity_tracking:
       _target_: facet_backward_com_velocity_tracking
       # Direct signed backward-speed tracking must be active during the pull.
-      weight: 1.0
+      weight: 3.0
       sigma: 0.12
     facet_backward_straightness:
       _target_: facet_backward_straightness
       # Conditional straightness gate now uses the signed FACET reference
       # velocity, rather than a sampled backward command.
-      weight: 1.50
+      weight: 0.75
       lateral_velocity_sigma: 0.10
       cross_track_sigma: 0.12
       heading_sigma: 0.12

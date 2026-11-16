@@ -31,6 +31,7 @@ from active_adaptation.utils.math import (
     quat_mul,
     quat_rotate,
     quat_rotate_inverse,
+    quat_from_yaw,
     wrap_to_pi,
     yaw_quat,
 )
@@ -187,6 +188,10 @@ class GaitCsvRecorder:
             "command_vx_yaw_mps", "command_vy_yaw_mps",
             "facet_reference_vx_yaw_mps", "facet_reference_vy_yaw_mps",
             "actual_com_vx_yaw_mps", "actual_com_vy_yaw_mps",
+            "command_vx_task_mps", "command_vy_task_mps",
+            "facet_reference_vx_task_mps", "facet_reference_vy_task_mps",
+            "actual_com_vx_task_mps", "actual_com_vy_task_mps",
+            "external_force_norm_n", "force_active", "is_standing_env",
             "root_yaw_rad", "command_heading_w_rad", "heading_error_rad",
             "root_roll_rate_radps", "root_pitch_rate_radps", "root_yaw_rate_radps",
         ]
@@ -319,20 +324,29 @@ class GaitCsvRecorder:
         left_leg_acc = leg_acc[0::2]
         right_leg_acc = leg_acc[1::2]
         command_xy = command.cmd_linvel_b[0, :2]
+        command_task = getattr(command, "cmd_linvel_h", command.cmd_linvel_b)[0, :2]
+        command_heading = command.command_heading_w[0]
         reference_w = command.surr_lin_vel_target[0, :, :2]
         reference_yaw = yaw_quat(root_quat).expand(reference_w.shape[0], -1)
         reference_b = quat_rotate_inverse(
             reference_yaw,
             torch.cat((reference_w, torch.zeros_like(reference_w[:, :1])), dim=-1),
         )[:, :2].mean(dim=0)
+        task_yaw = quat_from_yaw(command_heading)
+        reference_task = quat_rotate_inverse(
+            task_yaw.expand(reference_w.shape[0], -1),
+            torch.cat((reference_w, torch.zeros_like(reference_w[:, :1])), dim=-1),
+        )[:, :2].mean(dim=0)
         actual_com = quat_rotate_inverse(
             yaw_only, asset.data.root_com_lin_vel_w[0]
+        )[:2]
+        actual_task = quat_rotate_inverse(
+            task_yaw, asset.data.root_com_lin_vel_w[0]
         )[:2]
         root_ang_vel_b = quat_rotate_inverse(
             root_quat, asset.data.root_link_ang_vel_w[0]
         )
         root_yaw_rate = asset.data.root_link_ang_vel_w[0, 2]
-        command_heading = command.command_heading_w[0]
         heading_error = wrap_to_pi(asset.data.heading_w[0] - command_heading)
 
         left_contact = bool(contacts[0].item())
@@ -437,6 +451,19 @@ class GaitCsvRecorder:
             "facet_reference_vy_yaw_mps": self._float(reference_b[1]),
             "actual_com_vx_yaw_mps": self._float(actual_com[0]),
             "actual_com_vy_yaw_mps": self._float(actual_com[1]),
+            "command_vx_task_mps": self._float(command_task[0]),
+            "command_vy_task_mps": self._float(command_task[1]),
+            "facet_reference_vx_task_mps": self._float(reference_task[0]),
+            "facet_reference_vy_task_mps": self._float(reference_task[1]),
+            "actual_com_vx_task_mps": self._float(actual_task[0]),
+            "actual_com_vy_task_mps": self._float(actual_task[1]),
+            "external_force_norm_n": self._float(
+                command.current_external_force[0].norm()
+            ),
+            "force_active": int(
+                command.current_external_force[0].norm() > 1e-5
+            ),
+            "is_standing_env": int(command.is_standing_env[0, 0]),
             "root_yaw_rad": self._float(asset.data.heading_w[0]),
             "command_heading_w_rad": self._float(command_heading),
             "heading_error_rad": self._float(heading_error),

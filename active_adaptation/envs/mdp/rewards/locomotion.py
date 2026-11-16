@@ -2,7 +2,12 @@ import torch
 from typing import TYPE_CHECKING, Optional, List, Union
 from typing_extensions import override
 
-from active_adaptation.utils.math import quat_rotate, quat_rotate_inverse, yaw_quat
+from active_adaptation.utils.math import (
+    quat_from_yaw,
+    quat_rotate,
+    quat_rotate_inverse,
+    yaw_quat,
+)
 from .base import Reward
 from active_adaptation.envs.mdp.commands.locomotion import Twist
 
@@ -25,6 +30,19 @@ def _command_direction_mask(command_manager, direction: str):
     if direction == "forward":
         return command_x > threshold
     return command_x < -threshold
+
+
+def _task_yaw(command_manager):
+    """Yaw frame fixed at the beginning of the current command episode."""
+    heading = getattr(command_manager, "command_heading_w", None)
+    if heading is None:
+        return yaw_quat(command_manager.asset.data.root_link_quat_w)
+    return quat_from_yaw(heading)
+
+
+def _command_xy_task(command_manager):
+    command = getattr(command_manager, "cmd_linvel_h", command_manager.cmd_linvel_b)
+    return command[:, :2]
 
 
 class survival(Reward):
@@ -791,7 +809,7 @@ class biped_swing_forward(Reward):
             self.env, self.period, self.stance_ratio
         )
         in_swing = swing_phase > 0.0
-        root_quat = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        root_quat = _task_yaw(self.command_manager).unsqueeze(1)
         root_vel_w = self.asset.data.root_link_lin_vel_w
         feet_pos_rel_w = (
             self.asset.data.body_link_pos_w[:, self.body_ids]
@@ -809,7 +827,7 @@ class biped_swing_forward(Reward):
             - root_vel_w.unsqueeze(1)
             - root_rotation_vel_w,
         )
-        command = self.command_manager.cmd_linvel_b[:, :2]
+        command = _command_xy_task(self.command_manager)
         command_dir = command / command.norm(dim=-1, keepdim=True).clamp_min(
             1e-6
         )
@@ -888,10 +906,10 @@ class biped_swing_foot_placement(Reward):
         root_pos = self.asset.data.root_link_pos_w
         feet_pos_w = self.asset.data.body_link_pos_w[:, self.body_ids]
         feet_pos_b = quat_rotate_inverse(
-            yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1),
+            _task_yaw(self.command_manager).unsqueeze(1),
             feet_pos_w - root_pos.unsqueeze(1),
         )
-        command = self.command_manager.cmd_linvel_b[:, :2]
+        command = _command_xy_task(self.command_manager)
         speed = command.norm(dim=-1, keepdim=True)
         command_dir = command / speed.clamp_min(1e-6)
         along_command = (feet_pos_b[:, :, :2] * command_dir.unsqueeze(1)).sum(-1)
@@ -937,13 +955,13 @@ class biped_stride_limit(Reward):
             raise ValueError("max_separation and scale must be positive")
 
     def _compute(self) -> torch.Tensor:
-        root_quat = yaw_quat(self.asset.data.root_link_quat_w).unsqueeze(1)
+        root_quat = _task_yaw(self.command_manager).unsqueeze(1)
         feet_pos_b = quat_rotate_inverse(
             root_quat,
             self.asset.data.body_link_pos_w[:, self.body_ids]
             - self.asset.data.root_link_pos_w.unsqueeze(1),
         )
-        command = self.command_manager.cmd_linvel_b[:, :2]
+        command = _command_xy_task(self.command_manager)
         speed = command.norm(dim=-1, keepdim=True)
         command_dir = command / speed.clamp_min(1e-6)
         feet_along_command = (
