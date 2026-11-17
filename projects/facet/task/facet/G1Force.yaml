@@ -61,6 +61,9 @@ observation:
       noise_std: 0.2
     prev_actions: {steps: 2}
   priv:
+    # The FACET teacher/adaptation path needs the smoothed reference states to
+    # distinguish force-following from the zero-velocity release objective.
+    command_hidden: {}
     root_linvel_b: {yaw_only: true}
     root_angvel_b: {}
     # Keep the privileged observation contract identical across Isaac and

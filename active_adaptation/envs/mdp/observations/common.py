@@ -155,27 +155,41 @@ class gait_phase(Observation):
         )
 
 
-# class command_hidden(Observation):
-#     def __init__(self, env):
-#         super().__init__(env)
-#         self.command_manager = self.env.command_manager
-    
-#     @override
-#     def compute(self):
-#         return self.command_manager.command_hidden
-    
-#     @override
-#     def symmetry_transform(self):
-#         transform = sym_utils.SymmetryTransform(
-#             perm=torch.arange(3), 
-#             signs=[1, -1, 1]
-#         )
-#         return sym_utils.SymmetryTransform.cat([
-#             transform.repeat(3),
-#             transform.repeat(3),
-#             sym_utils.SymmetryTransform(torch.arange(3), torch.tensor([-1, -1, -1])),
-#             sym_utils.SymmetryTransform(torch.arange(3), torch.tensor([-1, -1, -1])),
-#         ])
+class command_hidden(Observation):
+    """Privileged FACET reference trajectory used by the adaptation teacher.
+
+    The public impedance command contains gains and the local setpoint, but a
+    zero translational Kp makes it insufficient to tell a moving force
+    reference from a released stand. Keep the smoothed reference states in the
+    privileged stream so PPO's teacher and recurrent adapter can learn that
+    transition without exposing simulator-only force values to deployment.
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.command_manager = self.env.command_manager
+
+    @override
+    def compute(self):
+        return self.command_manager.command_hidden
+
+    @override
+    def symmetry_transform(self):
+        transform = sym_utils.SymmetryTransform(
+            perm=torch.arange(3), signs=[1.0, -1.0, 1.0]
+        )
+        # Three position and three velocity samples, followed by roll/pitch/
+        # yaw and angular-velocity samples. Reflection reverses the angular
+        # vector convention used by the command manager.
+        angular = sym_utils.SymmetryTransform(
+            torch.arange(3), torch.tensor([-1.0, 1.0, -1.0])
+        )
+        return sym_utils.SymmetryTransform.cat([
+            transform.repeat(3),
+            transform.repeat(3),
+            angular.repeat(3),
+            angular.repeat(3),
+        ])
 
 
 class root_angvel_b(Observation):

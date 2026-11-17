@@ -937,9 +937,9 @@ class ImpedanceCommandManager(Command):
                 quat_from_yaw(self.command_heading_w), self.cmd_linvel_w
             ))
             return
-        # Queue index zero was seeded with the measured robot velocity.
-        # Using it as a command rewarded forward steps during backward pulls.
-        # Gait terms must use the SAME selected preview as impedance tracking.
+        # Queue index zero is the newest measured-state rollout. The paper's
+        # smoothed closed-loop reward uses the selected t' rollouts instead.
+        # Use their mean direction for gait masks, not the measured velocity.
         ref_vel_w = self.surr_lin_vel_target.mean(dim=1)
         ref_vel_b = quat_rotate_inverse(yaw_quat(self.asset.data.root_quat_w), ref_vel_w)
         self.cmd_linvel_w.copy_(ref_vel_w)
