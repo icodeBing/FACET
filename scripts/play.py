@@ -192,6 +192,7 @@ class GaitCsvRecorder:
             "facet_reference_vx_task_mps", "facet_reference_vy_task_mps",
             "actual_com_vx_task_mps", "actual_com_vy_task_mps",
             "external_force_norm_n", "force_active", "is_standing_env",
+            "root_com_x_m", "stand_anchor_error_xy_m", "gait_preview_error_mps",
             "root_yaw_rad", "command_heading_w_rad", "heading_error_rad",
             "root_roll_rate_radps", "root_pitch_rate_radps", "root_yaw_rate_radps",
         ]
@@ -464,6 +465,13 @@ class GaitCsvRecorder:
                 command.current_external_force[0].norm() > 1e-5
             ),
             "is_standing_env": int(command.is_standing_env[0, 0]),
+            "root_com_x_m": self._float(root_com_pos[0]),
+            "stand_anchor_error_xy_m": self._float(
+                (root_com_pos[:2] - command.stand_anchor_pos_w[0, :2]).norm()
+            ),
+            "gait_preview_error_mps": self._float(
+                (command_task - reference_task).norm()
+            ),
             "root_yaw_rad": self._float(asset.data.heading_w[0]),
             "command_heading_w_rad": self._float(command_heading),
             "heading_error_rad": self._float(heading_error),

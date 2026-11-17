@@ -38,10 +38,15 @@ observation:
 command:
   _target_: ImpedanceCommandManager
   virtual_mass_range: [2., 4., 8.]
-  # Paper-style force-following experiment. Kp=0 removes the virtual position
-  # spring; Kd is independently configured and starts at the paper's Go2 value.
+  # Kp=0 removes the virtual position spring. Calibrate damping for this G1
+  # walking experiment: 8-24 N / 32 Ns/m gives 0.25-0.75 m/s at equilibrium.
+  # Kd=4 requested 2-6 m/s and repeatedly saturated the 2 m/s reference cap.
   linear_kp_range: [0., 0.]
-  linear_kd_range: [4., 4.]
+  linear_kd_range: [32., 32.]
+  # The original sampler tied yaw Kp to translation Kp. Translation Kp=0
+  # must not disable heading recovery while learning backward locomotion.
+  angular_kp_range: [12., 12.]
+  angular_kd_range: [6., 6.]
   eef_body_name: null
   arm_body_name: null
   # Use the paper-scale preview and smoothing horizon.  A short [1,2,4]
@@ -57,12 +62,15 @@ command:
   force_drive_x_range: [8., 24.]
   force_drive_y_range: [0., 0.]
   force_drive_z_range: [0., 0.]
-  force_drive_duration_range: [1.0, 3.0]
+  # Include the 10 s pulls used in evaluation, plus shorter transitions.
+  force_drive_duration_range: [3.0, 10.0]
   # 0 samples both signs during training; override to 1 or -1 for playback.
   force_drive_direction: 0.0
-  # Guarantee a force-release interval in every episode so standing after
-  # the pull is represented during training.
-  force_drive_once: true
+  # Alternate pulls and explicit quiet intervals, instead of ~99% pulling
+  # (per-step resampling) or ~90% standing (one short pull per episode).
+  force_drive_once: false
+  force_drive_interval_range: [2.0, 4.0]
+  force_drive_start_delay_range: [0.5, 1.5]
   # After a finite pull ends, hold the release position and enter the
   # zero-velocity objective instead of carrying residual reference momentum.
   stand_on_force_release: true
@@ -115,15 +123,31 @@ reward:
     # root/torso stabilization below, but do not prescribe a fixed foot pose.
     facet_stand_root_motion:
       _target_: facet_stand_root_motion
-      weight: 3.0
+      weight: 0.80
       linear_sigma: 0.08
       angular_sigma: 0.20
     facet_stand_root_position:
       _target_: facet_stand_root_position
       # The anchor is rebased at force release, so this penalizes post-release
       # drift without pulling the robot back toward its pre-pull position.
-      weight: 2.0
+      weight: 0.50
       position_sigma: 0.08
+    # Reuse the standing leg/foot objectives already present at b89cfc8.
+    # These are gated off during walking and allow quiet double support.
+    facet_stand_joint_posture:
+      _target_: facet_stand_joint_posture
+      weight: 1.0
+      joint_names: [.*hip_.*_joint, .*knee_joint, .*ankle_.*_joint]
+      sigma: 0.25
+    facet_stand_foot_contact:
+      _target_: facet_stand_foot_contact
+      weight: 0.75
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+    facet_stand_foot_velocity:
+      _target_: facet_stand_foot_velocity
+      weight: 0.50
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      sigma: 0.10
     facet_stand_torso_stability:
       _target_: facet_stand_torso_stability
       weight: 0.50
@@ -297,13 +321,13 @@ reward:
     facet_backward_com_velocity_tracking:
       _target_: facet_backward_com_velocity_tracking
       # Direct signed backward-speed tracking must be active during the pull.
-      weight: 3.0
+      weight: 4.0
       sigma: 0.12
     facet_backward_straightness:
       _target_: facet_backward_straightness
       # Conditional straightness gate now uses the signed FACET reference
       # velocity, rather than a sampled backward command.
-      weight: 0.75
+      weight: 1.0
       lateral_velocity_sigma: 0.10
       cross_track_sigma: 0.12
       heading_sigma: 0.12

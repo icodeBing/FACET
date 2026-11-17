@@ -220,6 +220,8 @@ class ImpedanceCommandManager(Command):
         initial_yaw_range: Optional[Tuple[float, float]]=None,
         linear_kp_range: Tuple[float, float]=(2.0, 30.0),
         linear_kd_range: Tuple[float, float]=(4.0, 4.0),
+        angular_kp_range: Optional[Tuple[float, float]]=None,
+        angular_kd_range: Optional[Tuple[float, float]]=None,
         linvel_x_range=(-0.8, 1.4),
         backward_linvel_x_range=None,
         backward_prob: float = 0.0,
@@ -248,6 +250,8 @@ class ImpedanceCommandManager(Command):
         force_drive_direction: float = 0.0,
         force_drive_once: bool = False,
         stand_on_force_release: bool = False,
+        force_drive_interval_range=(0.0, 0.0),
+        force_drive_start_delay_range=(0.0, 0.0),
     ) -> None:
         super().__init__(env)
 
@@ -377,6 +381,17 @@ class ImpedanceCommandManager(Command):
             float(x) for x in force_drive_duration_range
         )
         self.force_drive_direction = float(force_drive_direction)
+        self.angular_kp_range = angular_kp_range
+        self.angular_kd_range = angular_kd_range
+        self.force_drive_interval_range = tuple(force_drive_interval_range)
+        self.force_drive_start_delay_range = tuple(force_drive_start_delay_range)
+        for name in ("angular_kp_range", "angular_kd_range",
+                     "force_drive_interval_range", "force_drive_start_delay_range"):
+            bounds = getattr(self, name)
+            if bounds is not None and (
+                len(bounds) != 2 or bounds[0] < 0.0 or bounds[0] > bounds[1]
+            ):
+                raise ValueError(f"`{name}` must be an ordered nonnegative pair")
         self.force_drive_once = bool(force_drive_once)
         self.stand_on_force_release = bool(stand_on_force_release)
         if not 0.0 <= self.force_drive_prob <= 1.0:
@@ -455,6 +470,7 @@ class ImpedanceCommandManager(Command):
         self.force_release_standing = torch.zeros(
             self.num_envs, 1, dtype=torch.bool, device=self.device
         )
+        self.force_drive_wait = torch.zeros(self.num_envs, 1, device=self.device)
         
         if self.has_eef:
             path = Path(__file__).parent / "target_archive.pt"
@@ -627,12 +643,23 @@ class ImpedanceCommandManager(Command):
         self.asset.has_external_wrench = True
 
     def reset(self, env_ids: torch.Tensor):
+        # Neither impulses nor task masks may leak from the previous episode.
+        self.force_impulse.time[env_ids] = 0.0
+        self.force_impulse.duration[env_ids] = 0.0
         self.force_drive.time[env_ids] = 0.0
         self.force_drive.duration[env_ids] = 0.0
         self.force_drive.force[env_ids] = 0.0
         self.force_drive_started[env_ids] = False
         self.force_was_active[env_ids] = False
         self.force_release_standing[env_ids] = False
+        self.force_drive_wait[env_ids] = torch.empty(
+            len(env_ids), 1, device=self.device
+        ).uniform_(*self.force_drive_start_delay_range)
+        self.is_standing_env[env_ids] = False
+        self.cmd_linvel_b[env_ids] = 0.0
+        self.cmd_linvel_w[env_ids] = 0.0
+        self.cmd_linvel_h[env_ids] = 0.0
+        self.cmd_yawvel_b[env_ids] = 0.0
         if self.randomize_gait_phase:
             self.gait_phase_offset[env_ids] = torch.randint(
                 0, 2, (len(env_ids),), device=self.device
@@ -689,6 +716,7 @@ class ImpedanceCommandManager(Command):
         # roll/pitch/yaw defaults, but a zero world yaw is not a valid target
         # for an episode that starts at another heading.
         self.setpoint_w[env_ids, 5] = self.command_heading_w[env_ids]
+        self._sample_angular_gains(env_ids)
         if self.fixed_velocity:
             self._sample_velocity(env_ids)
             self._set_velocity_target(env_ids)
@@ -723,6 +751,7 @@ class ImpedanceCommandManager(Command):
                 wp.from_torch(self.cmd.virtual_mass_base, dtype=wp.float32, return_ctype=True),
             ],
         )
+        self._sample_angular_gains(mask.nonzero().squeeze(-1))
         if not self.fixed_velocity:
             # Resampling the translational setpoint must not change the fixed
             # heading used to interpret force direction and backward gait.
@@ -767,14 +796,6 @@ class ImpedanceCommandManager(Command):
         self.pos_base = self.pos_base.roll(1, 1)
         self.pos_base.pos_w[:, 0] = self.asset.data.root_com_pos_w
         self.pos_base.vel_w[:, 0] = self.asset.data.root_com_lin_vel_w
-        # Drop the old walking preview after a stand command is sampled.
-        # Otherwise the first standing window can inherit forward momentum
-        # from the previous command and reward continued walking.
-        standing = self.is_standing_env[:, 0]
-        if standing.any():
-            self.pos_base.pos_w[standing] = self.stand_anchor_pos_w[standing].unsqueeze(1)
-            self.pos_base.vel_w[standing] = 0.0
-
         self.rot_base = self.rot_base.roll(1, 1)
         self.rot_base.pos_w[:, 0] = self.root_link_rpy_w
         self.rot_base.vel_w[:, 0] = self.asset.data.root_link_ang_vel_w
@@ -798,10 +819,10 @@ class ImpedanceCommandManager(Command):
         )
         self.force_impulse = impulse_force.where(resample, self.force_impulse)
 
-        self.force_drive.time.add_(self.env.step_dt)
+        self._advance_force_drive_timer()
         drive_resample = self.force_drive.expired & (
             (~self.force_drive_started if self.force_drive_once else True)
-        ) & (
+        ) & (self.force_drive_wait <= 0.0) & (
             torch.rand(self.num_envs, 1, device=self.device) < self.force_drive_prob
         )
         drive_force = ConstantForce.sample_ranges(
@@ -823,6 +844,11 @@ class ImpedanceCommandManager(Command):
         )
         self.force_drive = drive_force.where(drive_resample, self.force_drive)
         self.force_drive_started |= drive_resample
+        if drive_resample.any():
+            # A new segment defines a new line, not a path back to episode start.
+            self.backward_anchor_pos_w[drive_resample[:, 0]] = (
+                self.asset.data.root_com_pos_w[drive_resample[:, 0]]
+            )
         force_active = self.current_external_force.norm(dim=-1, keepdim=True) > 1e-5
         released = self.force_was_active & ~force_active
         if self.stand_on_force_release:
@@ -847,42 +873,86 @@ class ImpedanceCommandManager(Command):
                 # step too late and the preview keeps walking after release.
                 self.pos_base.vel_w[released_ids] = 0.0
                 self.pos_base.acc_w[released_ids] = 0.0
+        if self.stand_on_force_release and not self.fixed_velocity:
+            # Use THIS step's force state. Reading last step's standing mask
+            # erased a newly started pull and delayed clearing old previews.
+            standing = ~force_active[:, 0]
+        else:
+            standing = self.is_standing_env[:, 0]
+        if standing.any():
+            self.pos_base.pos_w[standing] = self.stand_anchor_pos_w[standing].unsqueeze(1)
+            self.pos_base.vel_w[standing] = 0.0
+            self.pos_base.acc_w[standing] = 0.0
         self.force_was_active.copy_(force_active)
         self.reference_dynamics(self.env.step_dt)
 
-        # Expose only the FACET reference velocity to gait-shaping terms.  It
-        # is an internal preview, not a commanded velocity and is never
-        # tracked by a standalone speed reward.  When the rope is released,
-        # the reference damping brings this value back to zero, activating the
-        # zero-speed balance terms.
-        ref_vel_w = self.pos_base.vel_w[:, 0]
+        self.surr_pos_target = self.pos_base.pos_w[:, self.ref_steps]
+        self.surr_lin_vel_target = self.pos_base.vel_w[:, self.ref_steps]
+        self.surr_yaw_target = self.rot_base.pos_w[:, self.ref_steps, 2:3]
+        self.surr_yaw_vel_target = self.rot_base.vel_w[:, self.ref_steps, 2:3]
+        self._update_gait_reference()
+
+        if self.has_eef:
+            self.surr_eef_pos_target = self.pos_eef.pos_w[:, self.ref_steps]
+            self.surr_eef_lin_vel_target = self.pos_eef.vel_w[:, self.ref_steps]
+
+        if self.stand_on_force_release and not self.fixed_velocity:
+            # With Kp=0, the legacy random moving setpoint has no physical
+            # meaning but was still fed to the actor as a conflicting command.
+            force_following = self.cmd.kp_base[:, 0] == 0.0
+            self.setpoint_w[force_following, :3] = torch.where(
+                force_active, self.asset.data.root_com_pos_w, self.stand_anchor_pos_w
+            )[force_following]
+            self.setpoint_vel_w[force_following] = 0.0
+        self.setpoint_b[:, :3] = quat_rotate_inverse(
+            self.asset.data.root_quat_w,
+            self.setpoint_w[:, :3] - self.asset.data.root_com_pos_w
+        )
+        self.setpoint_b[:, 3:] = wrap_to_pi(self.setpoint_w[:, 3:] - self.root_link_rpy_w)
+
+    def _advance_force_drive_timer(self):
+        # Detect this drive's falling edge, independently of impulse forces.
+        was_running = ~self.force_drive.expired
+        self.force_drive.time.add_(self.env.step_dt)
+        self.force_drive_wait.sub_(self.env.step_dt).clamp_min_(0.0)
+        drive_ended = was_running & self.force_drive.expired
+        wait = torch.empty_like(self.force_drive_wait).uniform_(
+            *self.force_drive_interval_range
+        )
+        self.force_drive_wait.copy_(torch.where(drive_ended, wait, self.force_drive_wait))
+
+    def _sample_angular_gains(self, env_ids: torch.Tensor):
+        # Translation Kp=0 must not silently remove all heading stiffness.
+        for values, bounds in ((self.cmd.kp_base, self.angular_kp_range),
+                               (self.cmd.kd_base, self.angular_kd_range)):
+            if bounds is not None:
+                values[env_ids, 1] = torch.empty(
+                    len(env_ids), device=self.device
+                ).uniform_(*bounds)
+
+    def _update_gait_reference(self):
+        if self.fixed_velocity:
+            # Preserve the explicit samples used by the b89cfc8 curriculum.
+            self.cmd_linvel_h.copy_(quat_rotate_inverse(
+                quat_from_yaw(self.command_heading_w), self.cmd_linvel_w
+            ))
+            return
+        # Queue index zero was seeded with the measured robot velocity.
+        # Using it as a command rewarded forward steps during backward pulls.
+        # Gait terms must use the SAME selected preview as impedance tracking.
+        ref_vel_w = self.surr_lin_vel_target.mean(dim=1)
         ref_vel_b = quat_rotate_inverse(yaw_quat(self.asset.data.root_quat_w), ref_vel_w)
         self.cmd_linvel_w.copy_(ref_vel_w)
         self.cmd_linvel_b.copy_(ref_vel_b)
         self.cmd_linvel_h.copy_(quat_rotate_inverse(
             quat_from_yaw(self.command_heading_w), ref_vel_w
         ))
-        self.cmd_yawvel_b.copy_(self.rot_base.vel_w[:, 0, 2:3])
+        self.cmd_yawvel_b.copy_(self.surr_yaw_vel_target.mean(dim=1))
         self.command_speed.copy_(ref_vel_b[:, :2].norm(dim=-1, keepdim=True))
         self.is_standing_env.copy_(
             (self.command_speed < self.stand_speed_threshold)
             | self.force_release_standing
         )
-
-        self.surr_pos_target = self.pos_base.pos_w[:, self.ref_steps]
-        self.surr_lin_vel_target = self.pos_base.vel_w[:, self.ref_steps]
-        self.surr_yaw_target = self.rot_base.pos_w[:, self.ref_steps, 2:3]
-        self.surr_yaw_vel_target = self.rot_base.vel_w[:, self.ref_steps, 2:3]
-
-        if self.has_eef:
-            self.surr_eef_pos_target = self.pos_eef.pos_w[:, self.ref_steps]
-            self.surr_eef_lin_vel_target = self.pos_eef.vel_w[:, self.ref_steps]
-
-        self.setpoint_b[:, :3] = quat_rotate_inverse(
-            self.asset.data.root_quat_w,
-            self.setpoint_w[:, :3] - self.asset.data.root_com_pos_w
-        )
-        self.setpoint_b[:, 3:] = wrap_to_pi(self.setpoint_w[:, 3:] - self.root_link_rpy_w)
 
     def _sample_velocity(self, env_ids: torch.Tensor):
         """Sample body-frame locomotion targets for the fixed-velocity mode."""

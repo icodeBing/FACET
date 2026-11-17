@@ -457,9 +457,10 @@ class facet_backward_com_velocity_tracking(Reward[ImpedanceCommandManager]):
         actual = _actual_com_linvel_h(self.command_manager, self.asset)[:, 0:1]
         backward = _backward_command_mask(self.command_manager)
         error = (actual - command) / self.sigma
-        # Keep a useful gradient when the policy walks forward against a
-        # backward target. exp(-error^2) saturates at zero in that case.
-        reward = -torch.log1p(error.square())
+        # Retain b89cfc8's accurate-tracking bonus with a mild error-sensitive
+        # tail. PPO learns from reward differences; it does not differentiate
+        # through this formula or through the simulator.
+        reward = torch.exp(-error.square()) - 0.25 * torch.log1p(error.square())
         return reward, backward
 
 
@@ -809,7 +810,9 @@ def _actual_com_linvel_h(command_manager: ImpedanceCommandManager, asset):
 
 
 def _backward_command_mask(command_manager: ImpedanceCommandManager):
-    return command_manager.cmd_linvel_h[:, 0:1] < -command_manager.stand_speed_threshold
+    return (
+        command_manager.cmd_linvel_h[:, 0:1] < -command_manager.stand_speed_threshold
+    ) & ~command_manager.is_standing_env
 
 
 class facet_command_linvel_b_x(Reward[ImpedanceCommandManager]):

@@ -62,6 +62,9 @@ class PPOConfig:
     clip_param: float = 0.2
     entropy_coef: float = 0.002
     target_kl: Union[float, None] = 0.02
+    # Standing/backward costs must retain their ordering when total reward
+    # is negative. Zero-clipping made most of the 1117 samples indistinguishable.
+    clamp_reward: bool = False
 
     compile: bool = False # slightly improve speed on some devices
 
@@ -391,7 +394,10 @@ class PPOPolicy(PPOBase):
     def train_policy(self, tensordict: TensorDict):    
         infos = []
         
-        tensordict = self.compute_advantage(tensordict, self.critic, "adv", "ret")
+        tensordict = self.compute_advantage(
+            tensordict, self.critic, "adv", "ret",
+            clamp_reward=self.cfg.clamp_reward,
+        )
         require_finite("GAE", adv=tensordict["adv"], ret=tensordict["ret"])
 
         reward = tensordict[REWARD_KEY].sum(-1)
@@ -435,6 +441,9 @@ class PPOPolicy(PPOBase):
         infos["critic/value_mean"] = tensordict["ret"].mean().item()
         infos["critic/value_std"] = tensordict["ret"].std().item()
         infos["critic/neg_rew_ratio"] = (reward <= 0.).float().mean().item()
+        infos["critic/reward_clipped_fraction"] = (
+            (reward < 0.).float().mean().item() if self.cfg.clamp_reward else 0.0
+        )
         infos["actor/early_stop"] = float(early_stop)
         opt = self.opt_teacher if self.cfg.phase == "train" else self.opt_finetune
         infos["actor/lr"] = opt.param_groups[0]["lr"]
