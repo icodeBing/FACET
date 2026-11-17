@@ -185,6 +185,7 @@ class GaitCsvRecorder:
             "left_foot_yaw_error_rad", "right_foot_yaw_error_rad",
             "left_foot_vertical_vel_mps", "right_foot_vertical_vel_mps",
             "root_com_y_m", "root_com_height_m", "root_roll_rad", "root_pitch_rad",
+            "torso_roll_rad", "torso_pitch_rad",
             "command_vx_yaw_mps", "command_vy_yaw_mps",
             "facet_reference_vx_yaw_mps", "facet_reference_vy_yaw_mps",
             "actual_com_vx_yaw_mps", "actual_com_vy_yaw_mps",
@@ -230,6 +231,7 @@ class GaitCsvRecorder:
         root_pos = asset.data.root_link_pos_w[0]
         root_quat = asset.data.root_link_quat_w[0]
         root_rpy = euler_from_quat(root_quat)
+        torso_rpy = euler_from_quat(asset.data.body_link_quat_w[0, self.torso_id])
         root_com_pos = asset.data.root_com_pos_w[0]
         yaw_only = yaw_quat(root_quat)
         foot_pos_w = asset.data.body_link_pos_w[0, self.foot_ids]
@@ -446,6 +448,8 @@ class GaitCsvRecorder:
             "root_com_height_m": self._float(root_com_pos[2]),
             "root_roll_rad": self._float(root_rpy[0]),
             "root_pitch_rad": self._float(root_rpy[1]),
+            "torso_roll_rad": self._float(torso_rpy[0]),
+            "torso_pitch_rad": self._float(torso_rpy[1]),
             "command_vx_yaw_mps": self._float(command_xy[0]),
             "command_vy_yaw_mps": self._float(command_xy[1]),
             "facet_reference_vx_yaw_mps": self._float(reference_b[0]),

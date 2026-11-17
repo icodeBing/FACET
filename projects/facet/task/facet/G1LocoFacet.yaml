@@ -74,6 +74,8 @@ command:
   # After a finite pull ends, hold the release position and enter the
   # zero-velocity objective instead of carrying residual reference momentum.
   stand_on_force_release: true
+  # Normalized tracking quality, independent of facet_track_lin_vel.weight.
+  velocity_curriculum_tracking_threshold: 0.45
   # The manager derives this mask from the FACET reference velocity; it is not
   # a sampled stand command.
   stand_speed_threshold: 0.02
@@ -108,6 +110,14 @@ reward:
     # Measures torso pitch and roll directly through the body gravity vector.
     body_upright: {weight: 4.0, body_name: torso_link}
     root_upright: {weight: 0.75}
+    # The torso reward alone can be satisfied by pitching the pelvis and
+    # bending the unlocked waist. Constrain the root link as well; the prior
+    # replay averaged 0.66 rad of root pitch (about 38 degrees).
+    facet_root_pitch_roll_l2:
+      _target_: facet_root_pitch_roll_l2
+      weight: 2.0
+      target_roll: 0.0
+      target_pitch: 0.0
     root_pitch_exp:
       _target_: root_pitch_exp
       weight: 1.20

@@ -182,6 +182,43 @@ class root_pitch_exp(Reward[ImpedanceCommandManager]):
         return reward, active
 
 
+class facet_root_pitch_roll_l2(Reward[ImpedanceCommandManager]):
+    """Keep the pelvis/root close to level while the torso remains compliant.
+
+    ``body_upright`` is normally attached to ``torso_link``.  With an unlocked
+    waist that lets the pelvis pitch forward while the torso stays nearly
+    vertical, which is exactly the shortcut visible in the forward replay.
+    This term observes the ``pelvis`` root body directly and remains active
+    for walking, force following, and standing commands.
+    """
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        target_roll: float = 0.0,
+        target_pitch: float = 0.0,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        body_ids = self.asset.find_bodies("pelvis", preserve_order=True)[0]
+        if len(body_ids) != 1:
+            raise ValueError("facet_root_pitch_roll_l2 requires exactly one pelvis body")
+        self.body_id = body_ids[0]
+        self.target_roll = float(target_roll)
+        self.target_pitch = float(target_pitch)
+
+    def _compute(self) -> torch.Tensor:
+        roll, pitch, _ = euler_from_quat(
+            self.asset.data.body_quat_w[:, self.body_id]
+        ).unbind(-1)
+        error = (
+            (roll - self.target_roll).square()
+            + (pitch - self.target_pitch).square()
+        )
+        return -error.reshape(self.num_envs, 1)
+
+
 class facet_stand_joint_posture(Reward[ImpedanceCommandManager]):
     """Keep the legs near the asset's nominal upright pose while standing.
 

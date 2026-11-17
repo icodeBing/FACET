@@ -229,7 +229,8 @@ class ImpedanceCommandManager(Command):
         velocity_curriculum_initial_x_range: Tuple[float, float] = (0.2, 0.35),
         velocity_curriculum_initial_backward_prob: float = 0.0,
         velocity_curriculum_initial_stand_prob: float = 0.0,
-        velocity_curriculum_tracking_threshold: float = 1.2,
+        # Fraction of the maximum tracking reward, independent of its weight.
+        velocity_curriculum_tracking_threshold: float = 0.45,
         velocity_curriculum_step: float = 0.0025,
         velocity_curriculum_extra_step: float = 0.005,
         linvel_y_range=(-0.8, 0.8),
@@ -353,8 +354,11 @@ class ImpedanceCommandManager(Command):
         ):
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"`{name}` must be in [0, 1]")
-        if self.velocity_curriculum_tracking_threshold < 0.0:
-            raise ValueError("`velocity_curriculum_tracking_threshold` must be nonnegative")
+        if not 0.0 <= self.velocity_curriculum_tracking_threshold <= 1.0:
+            raise ValueError(
+                "`velocity_curriculum_tracking_threshold` is now a normalized "
+                "score in [0, 1]; use 0.45 instead of the old weighted threshold"
+            )
         if not 0.0 < self.velocity_curriculum_step <= 1.0:
             raise ValueError("`velocity_curriculum_step` must be in (0, 1]")
         if not 0.0 < velocity_curriculum_extra_step <= 1.0:
@@ -1043,6 +1047,17 @@ class ImpedanceCommandManager(Command):
     def update_curriculum(self, progress: float, tracking_score: float | None):
         if not self.velocity_curriculum:
             return
+        # RewardGroup reports weighted rewards. Normalize before comparing so
+        # changing the tracking weight cannot silently change curriculum speed.
+        tracking_reward = self.env.reward_groups["loco"].funcs["facet_track_lin_vel"]
+        if (
+            tracking_score is not None
+            and tracking_reward.enabled
+            and tracking_reward.weight > 0.0
+        ):
+            tracking_score = float(tracking_score) / tracking_reward.weight
+        else:
+            tracking_score = None
         if (
             tracking_score is not None
             and tracking_score >= self.velocity_curriculum_tracking_threshold

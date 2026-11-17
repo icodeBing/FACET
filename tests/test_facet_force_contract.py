@@ -29,7 +29,7 @@ def load_function(path, name, scope=None, owner=None):
 
 
 MATH = {}
-for name in ['normalize', 'quat_from_yaw', 'yaw_quat', 'quat_rotate_inverse']:
+for name in ['normalize', 'quat_from_yaw', 'yaw_quat', 'quat_rotate_inverse', 'yaw_rotate', 'euler_from_quat']:
     MATH[name] = load_function('active_adaptation/utils/math.py', name, MATH)
 update_gait = load_function(
     'projects/facet/facet_commands/impedance_manip.py', '_update_gait_reference',
@@ -42,6 +42,32 @@ advance_timer = load_function(
 sample_angular = load_function(
     'projects/facet/facet_commands/impedance_manip.py', '_sample_angular_gains',
     owner='ImpedanceCommandManager',
+)
+set_velocity_target = load_function(
+    'projects/facet/facet_commands/impedance_manip.py', '_set_velocity_target',
+    MATH, 'ImpedanceCommandManager',
+)
+update_curriculum = load_function(
+    'projects/facet/facet_commands/impedance_manip.py', 'update_curriculum',
+    owner='ImpedanceCommandManager',
+)
+pelvis_reward = load_function(
+    'projects/facet/facet_commands/rewards.py', '_compute',
+    MATH, 'facet_root_pitch_roll_l2',
+)
+gait_phase_reward = load_function(
+    'active_adaptation/envs/mdp/rewards/locomotion.py', '_compute',
+    {
+        '_biped_gait_phase': load_function(
+            'active_adaptation/envs/mdp/rewards/locomotion.py',
+            '_biped_gait_phase', {'torch': torch},
+        ),
+        '_command_direction_mask': load_function(
+            'active_adaptation/envs/mdp/rewards/locomotion.py',
+            '_command_direction_mask',
+        ),
+    },
+    'biped_knee_phase_symmetry',
 )
 backward_mask = load_function('projects/facet/facet_commands/rewards.py', '_backward_command_mask')
 advantage = load_function('active_adaptation/learning/ppo/ppo_base.py', 'compute_advantage', {
@@ -68,6 +94,83 @@ class TimedForce:
 
 
 class ForceContractTest(unittest.TestCase):
+    def test_velocity_setpoint_encodes_signed_speed_and_balances_damping(self):
+        # Positive Kp is essential: the actor only sees x_des-x, gains and mass.
+        for direction in [-1., 1.]:
+            c = SimpleNamespace(
+                command_heading_w=torch.tensor([0., 1., -2.]),
+                cmd_linvel_b=torch.tensor([[direction * .3, 0., 0.]]).expand(3, -1),
+                cmd_linvel_w=torch.zeros(3, 3), cmd_yawvel_b=torch.zeros(3, 1),
+                cmd=SimpleNamespace(kp_base=torch.tensor([[12., 12.]]).expand(3, -1),
+                                    kd_base=torch.tensor([[32., 6.]]).expand(3, -1)),
+                asset=SimpleNamespace(data=SimpleNamespace(root_com_pos_w=torch.zeros(3, 3))),
+                is_standing_env=torch.zeros(3, 1, dtype=torch.bool),
+                stand_anchor_pos_w=torch.zeros(3, 3), setpoint_w=torch.zeros(3, 6),
+                root_link_rpy_w=torch.zeros(3, 3),
+            )
+            set_velocity_target(c, torch.arange(3))
+            offset = c.setpoint_w[:, :3] - c.asset.data.root_com_pos_w
+            torch.testing.assert_close(offset.norm(dim=-1), torch.full((3,), .8))
+            # The spring must cancel damping when measured speed equals command.
+            torch.testing.assert_close(12. * offset - 32. * c.cmd_linvel_w, torch.zeros(3, 3))
+
+    def test_curriculum_quality_is_independent_of_reward_weight(self):
+        for weight in [0., 1., 1.5, 4.]:
+            c = SimpleNamespace(
+                velocity_curriculum=True, velocity_curriculum_tracking_threshold=.7,
+                velocity_curriculum_progress=0., velocity_curriculum_extra_progress=0.,
+                velocity_curriculum_step=.01, velocity_curriculum_extra_step=.01,
+                device='cpu', env=SimpleNamespace(extra={}, reward_groups={
+                    'loco': SimpleNamespace(funcs={'facet_track_lin_vel':
+                        SimpleNamespace(enabled=True, weight=weight)})}),
+            )
+            update_curriculum(c, .5, .69 * weight)
+            self.assertEqual(c.velocity_curriculum_progress, 0.)
+            update_curriculum(c, .5, .71 * weight)
+            self.assertEqual(c.velocity_curriculum_progress, .01 if weight else 0.)
+
+    def test_pelvis_posture_reward_observes_root_even_with_upright_torso(self):
+        pitches = torch.tensor([0., .1, .66])
+        q = torch.zeros(3, 2, 4)
+        q[:, :, 0] = 1.  # torso body 1 stays upright
+        q[:, 0, 0] = torch.cos(pitches / 2.)
+        q[:, 0, 2] = torch.sin(pitches / 2.)
+        c = SimpleNamespace(
+            asset=SimpleNamespace(data=SimpleNamespace(body_quat_w=q)),
+            body_id=0, num_envs=3, target_roll=0., target_pitch=0.,
+        )
+        reward = pelvis_reward(c)
+        self.assertEqual(tuple(reward.shape), (3, 1))
+        self.assertEqual(reward[0].item(), 0.)
+        self.assertAlmostEqual(reward[1].item(), -.01, places=5)
+        self.assertAlmostEqual(reward[2].item(), -.4356, places=4)
+
+    def test_huber_knee_reward_distinguishes_locked_knee_from_target_gait(self):
+        asset = SimpleNamespace(data=SimpleNamespace(
+            joint_pos=torch.tensor([[0.0, 0.48]]),
+            default_joint_pos=torch.zeros(1, 2),
+        ))
+        env = SimpleNamespace(
+            episode_length_buf=torch.tensor([11]), step_dt=0.02,
+            command_manager=SimpleNamespace(
+                is_standing_env=torch.zeros(1, 1, dtype=torch.bool),
+                cmd_linvel_h=torch.tensor([[0.3, 0.0, 0.0]]),
+                cmd_linvel_b=torch.tensor([[0.3, 0.0, 0.0]]),
+                stand_speed_threshold=0.02,
+            ),
+        )
+        reward_obj = SimpleNamespace(
+            env=env, period=0.8, stance_ratio=0.55, asset=asset,
+            knee_ids=torch.tensor([0, 1]), default=torch.zeros(1, 2),
+            target_flexion=0.48, sigma=0.18, reward_type='huber',
+            command_direction='forward', command_manager=env.command_manager,
+        )
+        good_reward, _ = gait_phase_reward(reward_obj)
+        asset.data.joint_pos[0, 1] = -0.30
+        locked_reward, _ = gait_phase_reward(reward_obj)
+        self.assertGreater(good_reward.item(), locked_reward.item())
+        self.assertLess(locked_reward.item(), 0.0)
+
     def manager(self, n=4, fixed=False):
         # Initial episode yaw varies; some robots have since turned by pi.
         heading = torch.linspace(-2., 2., n)

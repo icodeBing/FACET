@@ -619,6 +619,7 @@ class biped_knee_phase_symmetry(Reward):
         target_flexion: float = 0.62,
         sigma: float = 0.18,
         command_direction: str = "all",
+        reward_type: str = "exp",
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -631,6 +632,11 @@ class biped_knee_phase_symmetry(Reward):
         self.stance_ratio = float(stance_ratio)
         self.target_flexion = float(target_flexion)
         self.sigma = float(sigma)
+        if self.sigma <= 0.0:
+            raise ValueError("knee phase sigma must be positive")
+        if reward_type not in {"exp", "huber"}:
+            raise ValueError("knee phase reward_type must be exp or huber")
+        self.reward_type = reward_type
         self.command_direction = command_direction
         _command_direction_mask(self.command_manager, self.command_direction)
 
@@ -643,8 +649,15 @@ class biped_knee_phase_symmetry(Reward):
             torch.pi * swing_phase
         )
         error = (knee - target).abs() / self.sigma
-        # Both legs must follow their own half-cycle target.
-        reward = torch.exp(-error).amin(dim=1, keepdim=True)
+        if self.reward_type == "huber":
+            # A locked, hyperextended knee used to receive an almost constant
+            # zero reward. A dense cost preserves differences between large
+            # errors, scoring each knee at its OWN phase (not q_left=q_right).
+            cost = torch.where(error < 1.0, 0.5 * error.square(), error - 0.5)
+            reward = -cost.mean(dim=1, keepdim=True)
+        else:
+            # Retain the previous reward for existing force/backward tasks.
+            reward = torch.exp(-error).amin(dim=1, keepdim=True)
         active = (~self.command_manager.is_standing_env) & (
             swing_phase > 0.0
         ).any(dim=1, keepdim=True) & _command_direction_mask(

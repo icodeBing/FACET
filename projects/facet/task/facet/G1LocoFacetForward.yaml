@@ -1,0 +1,56 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacet@_here_
+  - _self_
+
+name: G1LocoFacetForward
+
+# Stage 1: learn a clean forward gait before adding force, backward, or stand
+# commands. The curriculum starts in the range that the previous run could
+# actually track and expands only after normalized tracking quality reaches 0.45.
+command:
+  fixed_velocity: true
+  # Fixed-velocity mode encodes speed as x_des-x = Kd/Kp * v_cmd.
+  # Kp=0 erased the actor's speed command and drove FACET previews toward zero.
+  # Keep the force task's Kp=0 in its own config; use a positive spring here.
+  linear_kp_range: [12.0, 12.0]
+  linear_kd_range: [32.0, 32.0]
+  force_drive_prob: 0.0
+  disturbance_prob: 0.0
+  linvel_x_range: [0.20, 0.50]
+  backward_linvel_x_range: [0.0, 0.0]
+  backward_prob: 0.0
+  linvel_y_range: [0.0, 0.0]
+  yawvel_range: [0.0, 0.0]
+  stand_prob: 0.0
+  stand_speed_threshold: 0.02
+  velocity_curriculum: true
+  velocity_curriculum_initial_x_range: [0.20, 0.35]
+  velocity_curriculum_initial_backward_prob: 0.0
+  velocity_curriculum_initial_stand_prob: 0.0
+  velocity_curriculum_tracking_threshold: 0.45
+  velocity_curriculum_step: 0.0025
+  velocity_curriculum_extra_step: 0.005
+
+reward:
+  loco:
+    facet_track_lin_vel: {weight: 1.5, sigma: 0.16}
+    linvel_exp: {weight: 1.0, sigma: 0.16, dim: 2}
+    # Continuous, signed phase error prevents the left knee locking at its
+    # extension limit while the right knee supplies the entire stepping gait.
+    # PPO must retain negative costs (algo.clamp_reward=false).
+    biped_knee_phase_symmetry:
+      reward_type: huber
+      weight: 0.65
+    # In a no-slip gait a foot travels v*T in world coordinates, but only
+    # v*T*stance_ratio relative to the moving pelvis during its swing.
+    # These rewards measure RELATIVE position/velocity; 0.95 requested almost
+    # twice the relative stride needed for the 55% stance schedule.
+    biped_swing_forward:
+      step_length_scale: 0.55
+      min_step_length: 0.06
+      max_step_length: 0.28
+    biped_swing_foot_placement:
+      step_length_scale: 0.55
+      min_step_length: 0.06
+      max_step_length: 0.28
