@@ -58,6 +58,12 @@ reward:
       weight: 1.20
       target_pitch: 0.0
       pitch_sigma: 0.08
+    feet_orientation:
+      # Align foot yaw with the ground/task heading.  The inherited setting
+      # used torso_link, so a torso compensation tilt also rotated both feet.
+      weight: 1.50
+      feet_names: ".*_ankle_roll_link"
+      body_name: null
     feet_roll_neutral:
       reference_frame: heading
       weight: 1.50
@@ -76,10 +82,10 @@ reward:
 
     # Keep both pelvis and torso upright without making posture terms dominate
     # the phase-based leg rewards and force-following objective.
-    facet_root_pitch_roll_l2: {weight: 3.0, target_roll: 0.0, target_pitch: 0.0}
+    facet_root_pitch_roll_l2: {weight: 6.0, target_roll: 0.0, target_pitch: 0.0}
     facet_root_pitch_roll_exp:
       _target_: facet_root_pitch_roll_exp
-      weight: 1.5
+      weight: 3.0
       target_roll: 0.0
       target_pitch: 0.0
       sigma: 0.25
@@ -96,16 +102,16 @@ reward:
       _target_: facet_body_pitch_roll_l2
       # A dense world-frame torso signal complements the pelvis and gravity
       # terms; keep it moderate to avoid rigid, compensatory leg motion.
-      weight: 8.0
+      weight: 12.0
       body_name: torso_link
       target_roll: 0.0
       target_pitch: 0.0
-    joint_deviation_l2_waist: {weight: 4.0, joint_names: [waist.*]}
+    joint_deviation_l2_waist: {weight: 6.0, joint_names: [waist.*]}
     joint_deviation_l2_waist_pitch:
       _target_: joint_deviation_l2
       # Keep the pitch joint centered without overpowering leg swing and
       # balance. The broad waist term already includes this joint.
-      weight: 5.0
+      weight: 8.0
       joint_names: [waist_pitch_joint]
 
     # Stage 1 contains no backward or release-standing objective.
