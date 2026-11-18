@@ -74,6 +74,10 @@ class _DelayedJointAction(Action):
             0, self.max_delay + 1, (len(env_ids), 1), device=self.device
         )
         self.action_buf[env_ids] = 0
+        # A reset must not replay the previous episode's command through the
+        # delay queue.  Without this clear, the first few control steps after
+        # a fall apply stale joint targets before the new policy observation.
+        self.action_queue[env_ids] = 0
         self.applied_action[env_ids] = 0
 
         alpha = torch.empty(len(env_ids), 1, device=self.device)

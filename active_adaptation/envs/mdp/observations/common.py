@@ -204,7 +204,16 @@ class root_angvel_b(Observation):
     
     @override
     def reset(self, env_ids):
-        self.buffer[env_ids] = 0.0
+        quat = (
+            yaw_quat(self.asset.data.root_link_quat_w[env_ids])
+            if self.yaw_only
+            else self.asset.data.root_link_quat_w[env_ids]
+        )
+        current = quat_rotate_inverse(
+            quat, self.asset.data.root_com_ang_vel_w[env_ids]
+        )
+        self.buffer[env_ids] = current.unsqueeze(1)
+
     
     @override
     def update(self):
@@ -240,6 +249,10 @@ class root_gyro_substep(Observation):
         self.flatten = flatten
 
     @override
+    def reset(self, env_ids):
+        self.gyro[env_ids] = self.asset.data.root_link_ang_vel_b[env_ids].unsqueeze(1)
+
+    @override
     def post_step(self, substep):
         self.gyro[:, substep] = self.asset.data.root_link_ang_vel_b
     
@@ -257,6 +270,10 @@ class root_gyro_multistep(Observation):
         self.asset: Articulation = self.env.scene.articulations["robot"]
         self.noise_std = noise_std
         self.gyro_multistep = torch.zeros((self.num_envs, steps, 3), device=self.device)
+
+    @override
+    def reset(self, env_ids):
+        self.gyro_multistep[env_ids] = self.asset.data.root_link_ang_vel_b[env_ids].unsqueeze(1)
     
     @override
     def update(self):
@@ -303,6 +320,12 @@ class gravity_multistep(Observation):
         self.interval = interval
         self.noise_std = noise_std
         self.gravity_multistep = torch.zeros((self.num_envs, self.steps * interval, 3), device=self.device)
+
+    @override
+    def reset(self, env_ids):
+        gravity = self.asset.data.projected_gravity_b[env_ids]
+        gravity = gravity / gravity.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        self.gravity_multistep[env_ids] = gravity.unsqueeze(1)
     
     @override
     def update(self):

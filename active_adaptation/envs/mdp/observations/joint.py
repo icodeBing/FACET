@@ -106,6 +106,12 @@ class joint_pos_multistep(joint_observation):
         self.joint_pos_substep = torch.zeros(self.num_envs, 2, self.num_joints, device=self.device)
 
     @override
+    def reset(self, env_ids):
+        current = self.asset.data.joint_pos[env_ids][:, self.joint_ids]
+        self.joint_pos_multistep[env_ids] = current.unsqueeze(1)
+        self.joint_pos_substep[env_ids] = current.unsqueeze(1)
+
+    @override
     def post_step(self, substep):
         self.joint_pos_substep[:, substep % 2] = self.asset.data.joint_pos[:, self.joint_ids]
     
@@ -153,9 +159,16 @@ class joint_vel_multistep(joint_observation):
         else:
             shape = (self.num_envs, 2, self.num_joints)
             self.joint_vel_substep = torch.zeros(shape, device=self.device)
-    
+
     @override
     def reset(self, env_ids: torch.Tensor):
+        current_vel = self.asset.data.joint_vel[env_ids][:, self.joint_ids]
+        self.joint_vel_multistep[env_ids] = current_vel.unsqueeze(1)
+        if self.from_pos:
+            current_pos = self.asset.data.joint_pos[env_ids][:, self.joint_ids]
+            self.joint_pos_substep[env_ids] = current_pos.unsqueeze(1)
+        else:
+            self.joint_vel_substep[env_ids] = current_vel.unsqueeze(1)
         self.noise_std[env_ids] = torch.rand(len(env_ids), self.num_joints, device=self.device) * self.noise_std_max
 
     @override
@@ -191,6 +204,11 @@ class joint_pos_substep(joint_observation):
         super().__init__(env, joint_names, output_order)
         shape = (self.num_envs, self.env.decimation, self.num_joints)
         self.joint_pos_substep = torch.zeros(shape, device=self.device)
+
+    @override
+    def reset(self, env_ids):
+        current = self.asset.data.joint_pos[env_ids][:, self.joint_ids]
+        self.joint_pos_substep[env_ids] = current.unsqueeze(1)
     
     @override
     def post_step(self, substep):
@@ -208,6 +226,11 @@ class joint_vel_substep(joint_observation):
         super().__init__(env)
         shape = (self.num_envs, self.env.decimation, self.num_joints)
         self.joint_vel_substep = torch.zeros(shape, device=self.device)
+
+    @override
+    def reset(self, env_ids):
+        current = self.asset.data.joint_vel[env_ids][:, self.joint_ids]
+        self.joint_vel_substep[env_ids] = current.unsqueeze(1)
 
     @override
     def post_step(self, substep):

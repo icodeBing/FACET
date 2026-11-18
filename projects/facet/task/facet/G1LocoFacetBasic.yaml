@@ -1,0 +1,106 @@
+# @package task
+defaults:
+  - /task/G1/G1LocoFlat@_here_
+  - _self_
+
+name: G1LocoFacetBasic
+
+# Stage 0: establish a repeatable two-legged gait before introducing FACET
+# preview tracking, external force, backward commands, or release standing.
+# This is intentionally a plain Twist task so its success can be evaluated
+# independently of the impedance reference implementation.
+num_envs: 4096
+max_episode_length: 1000
+
+input:
+  action:
+    max_delay: 0
+    alpha_range: [1.0, 1.0]
+
+command:
+  _target_: Twist
+  linvel_x_range: [0.15, 0.25]
+  linvel_y_range: [0.0, 0.0]
+  angvel_range: [0.0, 0.0]
+  yaw_stiffness_range: [1.0, 1.0]
+  use_stiffness_ratio: 0.0
+  stand_prob: 0.0
+  resample_interval: 300
+  resample_prob: 1.0
+  curriculum: false
+
+reward:
+  loco:
+    linvel_exp: {weight: 2.0, sigma: 0.25, dim: 2}
+    linvel_projection: {weight: 0.25}
+    angvel_z_exp: {weight: 0.5, gamma: 0.8}
+    angvel_xy_l2: {weight: 0.04, body_names: [pelvis, torso_link]}
+    linvel_z_l2: {weight: 0.25}
+    root_upright: {weight: 1.5}
+    body_upright: {weight: 1.5, body_name: torso_link}
+    base_height_exp: {weight: 1.0, target_height: 0.74}
+    single_foot_contact:
+      weight: 0.25
+      body_names: .*ankle_roll_link
+      margin: 0.1
+    biped_alternating_contact:
+      weight: 0.10
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      period: 0.8
+      threshold: 0.55
+    max_feet_height:
+      weight: 0.25
+      body_names: .*ankle_roll_link
+      target_height: 0.08
+    feet_sliding: {weight: 0.10, body_names: .*ankle_roll_link}
+    feet_lateral_separation:
+      weight: 0.20
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      max_separation: 0.30
+      scale: 0.08
+    energy_l1: {weight: 1.0e-4}
+    joint_acc_l2: {weight: 1.0e-7}
+    joint_torques_l2: {weight: 2.0e-6}
+    action_rate_l2: {weight: 0.002}
+    action_rate2_l2: {weight: 0.001}
+    joint_vel_l2: {weight: 1.0e-3, joint_names: [.*shoulder.*, .*elbow_joint]}
+    joint_deviation_l1_arms:
+      _target_: joint_deviation_l1
+      weight: 0.20
+      joint_names: [.*shoulder.*, .*elbow_joint]
+    joint_deviation_l2_waist: {weight: 0.50, joint_names: [waist.*]}
+    joint_deviation_l1_legs:
+      _target_: joint_deviation_l1
+      weight: 0.20
+      joint_names: [.*hip_roll_joint, .*hip_yaw_joint]
+
+# Remove all dynamics randomization and pushes for the first baseline. These
+# are added back only after the no-force gait survives long episodes.
+randomization:
+  perturb_body_mass: {".*": [1.0, 1.0]}
+  perturb_body_materials:
+    body_names: ".*ankle_roll_link"
+    static_friction_range: [1.0, 1.0]
+    dynamic_friction_range: [1.0, 1.0]
+    restitution_range: [0.0, 0.0]
+  motor_params:
+    stiffness_range: {".*": [1.0, 1.0]}
+    damping_range: {".*": [1.0, 1.0]}
+  reset_joint_states_uniform:
+    pos_ranges: {".*": [0.0, 0.0]}
+    rel: true
+  push_body:
+    body_names: "torso_link"
+    force_range: [0.0, 0.0]
+    min_interval: 100000
+    decay: 1.0
+
+termination:
+  crash:
+    body_names_expr:
+      - pelvis
+      - torso_link
+      - ".*_hip_.*_link"
+      - ".*shoulder_.*_link"
+      - ".*(wrist|elbow).*"
+  fall_over: {xy_thres: 0.9}

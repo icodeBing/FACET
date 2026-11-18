@@ -1,0 +1,66 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacet@_here_
+  - _self_
+
+name: G1LocoFacetForceForward
+
+# Stage 1: identify the force-to-reference and reference-to-gait loop with one
+# stationary, positive task heading.  The pull lasts longer than an episode,
+# so there is no release transition or force resampling during this stage.
+command:
+  virtual_mass_range: [4., 4., 4.]
+  linear_kp_range: [0., 0.]
+  linear_kd_range: [32., 32.]
+  angular_kp_range: [12., 12.]
+  angular_kd_range: [6., 6.]
+  fixed_velocity: false
+  force_drive_prob: 1.0
+  force_drive_x_range: [16., 16.]
+  force_drive_y_range: [0., 0.]
+  force_drive_z_range: [0., 0.]
+  force_drive_duration_range: [100., 100.]
+  force_drive_direction: 1.0
+  force_drive_once: true
+  force_drive_interval_range: [0., 0.]
+  force_drive_start_delay_range: [0., 0.]
+  stand_on_force_release: false
+  disturbance_prob: 0.0
+  randomize_gait_phase: true
+
+  # These fields are unused when fixed_velocity=false, but setting them to
+  # deterministic values prevents accidental command sampling if this task is
+  # later overridden from the command line.
+  linvel_x_range: [0., 0.]
+  backward_linvel_x_range: [-0.30, -0.30]
+  backward_prob: 0.0
+  stand_prob: 0.0
+  linvel_y_range: [0., 0.]
+  yawvel_range: [0., 0.]
+
+reward:
+  loco:
+    # Stage 1 contains no backward or release-standing objective.
+    facet_backward_com_velocity_tracking: {weight: 0.0}
+    facet_backward_straightness: {weight: 0.0}
+    facet_backward_step_symmetry: {weight: 0.0}
+    biped_alternating_contact_backward: {weight: 0.0}
+    biped_swing_height_backward: {weight: 0.0}
+    biped_swing_knee_flexion_backward: {weight: 0.0}
+    biped_knee_phase_symmetry_backward: {weight: 0.0}
+    biped_swing_hip_flexion_backward: {weight: 0.0}
+    biped_swing_forward_backward: {weight: 0.0}
+    biped_swing_foot_placement_backward: {weight: 0.0}
+    biped_stride_limit_backward: {weight: 0.0}
+    biped_stance_foot_velocity_backward: {weight: 0.0}
+
+    # There is no force-release event in this stage. Keep the stand-only terms
+    # out of the objective instead of relying only on their runtime mask.
+    facet_stand_joint_posture: {weight: 0.0}
+    facet_stand_foot_contact: {weight: 0.0}
+    facet_stand_foot_velocity: {weight: 0.0}
+    facet_stand_torso_stability: {weight: 0.0}
+    facet_stand_root_motion: {weight: 0.0}
+    facet_stand_root_position: {weight: 0.0}
+    facet_stand_actual_com_speed: {weight: 0.0}
+
