@@ -8,6 +8,15 @@ name: G1LocoFacetForceForward
 # Stage 1: identify the force-to-reference and reference-to-gait loop with one
 # stationary, positive task heading.  The pull lasts longer than an episode,
 # so there is no release transition or force resampling during this stage.
+input:
+  action:
+    action_scaling:
+      # The replay repeatedly drove waist_pitch_joint to its +0.52 rad limit,
+      # creating a backward-leaning pelvis and a forward-folded torso. Keep
+      # the action dimension present for checkpoint compatibility, but hold
+      # this joint at its nominal upright position in Stage 1.
+      waist_pitch_joint: 0.0
+
 command:
   virtual_mass_range: [4., 4., 4.]
   linear_kp_range: [0., 0.]
