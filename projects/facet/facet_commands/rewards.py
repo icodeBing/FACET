@@ -286,6 +286,36 @@ class facet_body_pitch_roll_exp(Reward[ImpedanceCommandManager]):
         return torch.exp(-error.unsqueeze(-1) / self.sigma**2)
 
 
+class facet_body_pitch_roll_l2(Reward[ImpedanceCommandManager]):
+    """Dense force-active cost for torso roll and pitch error."""
+
+    def __init__(
+        self,
+        env,
+        weight: float,
+        body_name: str = "torso_link",
+        target_roll: float = 0.0,
+        target_pitch: float = 0.0,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        body_ids = self.asset.find_bodies(body_name, preserve_order=True)[0]
+        if len(body_ids) != 1:
+            raise ValueError("facet_body_pitch_roll_l2 requires one body")
+        self.body_id = body_ids[0]
+        self.target_roll = float(target_roll)
+        self.target_pitch = float(target_pitch)
+
+    def _compute(self) -> torch.Tensor:
+        roll, pitch, _ = euler_from_quat(
+            self.asset.data.body_quat_w[:, self.body_id]
+        ).unbind(-1)
+        error = (roll - self.target_roll).square() + (
+            pitch - self.target_pitch
+        ).square()
+        return -error.unsqueeze(-1)
+
+
 class facet_stand_joint_posture(Reward[ImpedanceCommandManager]):
     """Keep the legs near the asset's nominal upright pose while standing.
 
