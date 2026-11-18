@@ -31,6 +31,10 @@ def load_function(path, name, scope=None, owner=None):
 MATH = {}
 for name in ['normalize', 'quat_from_yaw', 'yaw_quat', 'quat_rotate_inverse', 'yaw_rotate', 'euler_from_quat']:
     MATH[name] = load_function('active_adaptation/utils/math.py', name, MATH)
+limit_action_delta = load_function(
+    'active_adaptation/envs/mdp/actions/joint.py', '_smooth_limit_action_delta',
+    {'torch': torch},
+)
 update_gait = load_function(
     'projects/facet/facet_commands/impedance_manip.py', '_update_gait_reference',
     MATH, 'ImpedanceCommandManager',
@@ -94,6 +98,14 @@ class TimedForce:
 
 
 class ForceContractTest(unittest.TestCase):
+    def test_joint_target_limit_bounds_waist_without_changing_unlimited_joints(self):
+        delta = torch.tensor([[-1.0, 1.0, -0.1, 0.1]])
+        limit = torch.tensor([0.20, 0.20, float('inf'), float('inf')])
+        limited = limit_action_delta(delta, limit)
+        self.assertTrue(torch.all(limited[:, :2].abs() < 0.20).item())
+        torch.testing.assert_close(limited[:, 2:], delta[:, 2:])
+        self.assertAlmostEqual(limited[0, 0].item(), -limited[0, 1].item(), places=5)
+
     def test_velocity_setpoint_encodes_signed_speed_and_balances_damping(self):
         # Positive Kp is essential: the actor only sees x_des-x, gains and mass.
         for direction in [-1., 1.]:

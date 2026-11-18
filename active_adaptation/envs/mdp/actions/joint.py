@@ -16,6 +16,14 @@ from active_adaptation.utils.symmetry import joint_space_symmetry
 from .base import Action
 
 
+def _smooth_limit_action_delta(action_delta: torch.Tensor, limit: torch.Tensor):
+    """Smoothly bound selected joint target offsets while leaving others unchanged."""
+    bounded = torch.isfinite(limit)
+    safe_limit = torch.where(bounded, limit, torch.ones_like(limit))
+    limited_delta = safe_limit * torch.tanh(action_delta / safe_limit)
+    return torch.where(bounded, limited_delta, action_delta)
+
+
 class _DelayedJointAction(Action):
     def __init__(
         self,
@@ -111,6 +119,7 @@ class JointPosition(_DelayedJointAction):
         max_delay: int = 2,
         alpha_range: Tuple[float, float] = (0.5, 1.0),
         input_order: Literal["isaac", "mujoco", "mjlab"] = "isaac",
+        action_target_limit: Optional[Dict[str, float]] = None,
     ):
         super().__init__(
             env,
@@ -121,6 +130,24 @@ class JointPosition(_DelayedJointAction):
         )
         self.default_joint_pos = self.asset.data.default_joint_pos.clone()
         self.offset = torch.zeros_like(self.default_joint_pos)
+        target_limits = torch.full_like(self.action_scaling, torch.inf)
+        if action_target_limit:
+            _, limit_joint_names, limit_values = self.resolve(action_target_limit)
+            limits_by_name = dict(zip(limit_joint_names, limit_values))
+            uncontrolled = set(limits_by_name) - set(self.joint_names)
+            if uncontrolled:
+                raise ValueError(
+                    "action_target_limit includes joints not controlled by this action: "
+                    + ", ".join(sorted(uncontrolled))
+                )
+            target_limits = torch.tensor(
+                [limits_by_name.get(name, torch.inf) for name in self.joint_names],
+                device=self.device,
+                dtype=self.action_scaling.dtype,
+            )
+            if torch.any(target_limits <= 0.0):
+                raise ValueError("action_target_limit values must be positive")
+        self.action_target_limit = target_limits
 
     @override
     def reset(self, env_ids: torch.Tensor):
@@ -134,7 +161,11 @@ class JointPosition(_DelayedJointAction):
         self.action_queue = self.action_queue.roll(-1, dims=1)
 
         jpos_target = self.default_joint_pos.clone()
-        jpos_target[:, self.joint_ids] += self.applied_action * self.action_scaling
+        action_delta = self.applied_action * self.action_scaling
+        action_delta = _smooth_limit_action_delta(
+            action_delta, self.action_target_limit
+        )
+        jpos_target[:, self.joint_ids] += action_delta
         self.asset.set_joint_position_target(jpos_target)
 
 

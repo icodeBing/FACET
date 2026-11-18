@@ -11,11 +11,13 @@ name: G1LocoFacetForceForward
 input:
   action:
     action_scaling:
-      # The replay repeatedly drove waist_pitch_joint to its +0.52 rad limit,
-      # creating a backward-leaning pelvis and a forward-folded torso. Keep
-      # the action dimension present for checkpoint compatibility, but hold
-      # this joint at its nominal upright position in Stage 1.
-      waist_pitch_joint: 0.0
+      # Preserve the waist pitch authority used to train the checkpoint.
+      # Locking it during playback caused repeated falls within seconds.
+      waist_pitch_joint: 0.25
+    # Keep dynamic waist authority, but prevent the policy from repeatedly
+    # commanding the physical +/-0.52 rad joint limit.
+    action_target_limit:
+      waist_pitch_joint: 0.20
 
 command:
   virtual_mass_range: [4., 4., 4.]
