@@ -40,6 +40,51 @@ command:
 
 reward:
   loco:
+    # Use the ground heading frame so a tilted torso cannot make the feet
+    # appear level merely by leaning with them.
+    feet_pitch_neutral:
+      reference_frame: heading
+      weight: 1.20
+      target_pitch: 0.0
+      pitch_sigma: 0.08
+    feet_roll_neutral:
+      reference_frame: heading
+      weight: 2.00
+      target_roll: 0.0
+      roll_sigma: 0.06
+      stance_sigma: 0.05
+      swing_sigma: 0.12
+    feet_roll_symmetry:
+      reference_frame: heading
+      weight: 1.20
+      target_mean_roll: 0.0
+      symmetry_sigma: 0.08
+      mean_sigma: 0.10
+
+    # Replay means were pelvis pitch -0.36 rad and torso pitch +0.15 rad.
+    # Penalize the pelvis tilt directly and discourage waist compensation.
+    facet_root_pitch_roll_l2: {weight: 6.0, target_roll: 0.0, target_pitch: 0.0}
+    facet_root_pitch_roll_exp:
+      _target_: facet_root_pitch_roll_exp
+      weight: 3.0
+      target_roll: 0.0
+      target_pitch: 0.0
+      sigma: 0.25
+    root_upright: {weight: 2.0}
+    body_upright: {weight: 5.0, body_name: torso_link}
+    facet_body_pitch_roll_exp:
+      _target_: facet_body_pitch_roll_exp
+      weight: 5.0
+      body_name: torso_link
+      target_roll: 0.0
+      target_pitch: 0.0
+      sigma: 0.16
+    joint_deviation_l2_waist: {weight: 7.0, joint_names: [waist.*]}
+    joint_deviation_l2_waist_pitch:
+      _target_: joint_deviation_l2
+      weight: 5.0
+      joint_names: [waist_pitch_joint]
+
     # Stage 1 contains no backward or release-standing objective.
     facet_backward_com_velocity_tracking: {weight: 0.0}
     facet_backward_straightness: {weight: 0.0}

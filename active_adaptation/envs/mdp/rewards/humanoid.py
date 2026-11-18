@@ -150,6 +150,7 @@ class feet_pitch_neutral(Reward):
         body_name: str = "torso_link",
         target_pitch: float = 0.0,
         pitch_sigma: float = 0.12,
+        reference_frame: str = "torso",
         enabled: bool = True,
     ):
         super().__init__(env, weight, enabled)
@@ -163,11 +164,19 @@ class feet_pitch_neutral(Reward):
         self.body_id = self.body_id[0]
         self.target_pitch = float(target_pitch)
         self.pitch_sigma = float(pitch_sigma)
+        if reference_frame not in ("torso", "heading"):
+            raise ValueError("reference_frame must be torso or heading")
+        self.reference_frame = reference_frame
         if self.pitch_sigma <= 0.0:
             raise ValueError("pitch_sigma must be positive")
 
     def _compute(self) -> torch.Tensor:
-        torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
+        if self.reference_frame == "heading":
+            torso_quat = yaw_quat(
+                self.asset.data.root_link_quat_w
+            ).unsqueeze(1)
+        else:
+            torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
         feet_quat = self.asset.data.body_quat_w[:, self.feet_id]
         relative_quat = quat_mul(
             quat_conjugate(torso_quat).expand_as(feet_quat), feet_quat
@@ -212,6 +221,7 @@ class feet_roll_neutral(Reward):
         stance_ratio: float = 0.55,
         stance_sigma: float | None = None,
         swing_sigma: float | None = None,
+        reference_frame: str = "torso",
         enabled: bool = True,
     ):
         super().__init__(env, weight, enabled)
@@ -233,6 +243,9 @@ class feet_roll_neutral(Reward):
         self.swing_sigma = float(
             swing_sigma if swing_sigma is not None else roll_sigma
         )
+        if reference_frame not in ("torso", "heading"):
+            raise ValueError("reference_frame must be torso or heading")
+        self.reference_frame = reference_frame
         if self.roll_sigma <= 0.0:
             raise ValueError("roll_sigma must be positive")
         if (
@@ -244,7 +257,12 @@ class feet_roll_neutral(Reward):
             raise ValueError("stance_sigma and swing_sigma must be positive")
 
     def _compute(self) -> torch.Tensor:
-        torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
+        if self.reference_frame == "heading":
+            torso_quat = yaw_quat(
+                self.asset.data.root_link_quat_w
+            ).unsqueeze(1)
+        else:
+            torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
         feet_quat = self.asset.data.body_quat_w[:, self.feet_id]
         relative_quat = quat_mul(
             quat_conjugate(torso_quat).expand_as(feet_quat), feet_quat
@@ -282,6 +300,7 @@ class feet_roll_symmetry(Reward):
         target_mean_roll: float = 0.0,
         symmetry_sigma: float = 0.10,
         mean_sigma: float = 0.16,
+        reference_frame: str = "torso",
         enabled: bool = True,
     ):
         super().__init__(env, weight, enabled)
@@ -294,11 +313,19 @@ class feet_roll_symmetry(Reward):
         self.target_mean_roll = float(target_mean_roll)
         self.symmetry_sigma = float(symmetry_sigma)
         self.mean_sigma = float(mean_sigma)
+        if reference_frame not in ("torso", "heading"):
+            raise ValueError("reference_frame must be torso or heading")
+        self.reference_frame = reference_frame
         if self.symmetry_sigma <= 0.0 or self.mean_sigma <= 0.0:
             raise ValueError("roll sigmas must be positive")
 
     def _compute(self) -> torch.Tensor:
-        torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
+        if self.reference_frame == "heading":
+            torso_quat = yaw_quat(
+                self.asset.data.root_link_quat_w
+            ).unsqueeze(1)
+        else:
+            torso_quat = self.asset.data.body_quat_w[:, self.body_id].unsqueeze(1)
         feet_quat = self.asset.data.body_quat_w[:, self.feet_id]
         relative_quat = quat_mul(
             quat_conjugate(torso_quat).expand_as(feet_quat), feet_quat
