@@ -1,0 +1,70 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacetForceForward@_here_
+  - _self_
+
+name: G1LocoFacetForceBackward
+
+# Stage 2: initialize from the accepted force-forward checkpoint, then learn
+# one continuous backward pull. Preserve Stage 1's action/observation contract,
+# uprightness terms, foot orientation and fixed episode-heading reference.
+command:
+  fixed_velocity: false
+  linear_kp_range: [0., 0.]
+  linear_kd_range: [32., 32.]
+  angular_kp_range: [12., 12.]
+  angular_kd_range: [6., 6.]
+  # Magnitudes are positive; the separate direction flag produces -8 N.
+  # Ideal reference equilibrium: Fx / Kd = -8 / 32 = -0.25 m/s.
+  force_drive_x_range: [8., 8.]
+  force_drive_direction: -1.0
+  force_drive_duration_range: [100., 100.]
+  force_drive_once: true
+  stand_on_force_release: false
+  # Explicit velocity samples remain unused in force-driven mode.
+  backward_linvel_x_range: [-0.25, -0.25]
+  backward_prob: 0.0
+  stand_prob: 0.0
+
+reward:
+  loco:
+    # Retain shared knee support, air-time and posture terms, but isolate the
+    # direction-specific backward gait. All backward parameters are inherited
+    # from G1LocoFacet; Stage 1 only overrode their weights to zero.
+    biped_alternating_contact: {weight: 0.0}
+    biped_swing_height: {weight: 0.0}
+    biped_swing_knee_flexion: {weight: 0.0}
+    biped_knee_phase_symmetry: {weight: 0.0}
+    biped_swing_hip_flexion: {weight: 0.0}
+    biped_swing_forward: {weight: 0.0}
+    biped_swing_foot_placement: {weight: 0.0}
+    biped_stride_limit: {weight: 0.0}
+    biped_stance_foot_velocity: {weight: 0.0}
+
+    # These targets follow the force-generated FACET preview, rather than a
+    # sampled constant velocity. Straightness stays active under the pull so
+    # turning around to walk forward cannot satisfy the backward objective.
+    facet_backward_com_velocity_tracking: {weight: 4.0}
+    facet_backward_straightness: {weight: 1.0}
+    facet_backward_step_symmetry: {weight: 0.80}
+    biped_alternating_contact_backward: {weight: 2.75}
+    biped_swing_height_backward: {weight: 1.25}
+    biped_swing_knee_flexion_backward: {weight: 0.75}
+    biped_knee_phase_symmetry_backward: {weight: 0.75}
+    biped_swing_hip_flexion_backward: {weight: 0.70}
+    biped_swing_forward_backward: {weight: 1.20}
+    biped_swing_foot_placement_backward: {weight: 1.10}
+    biped_stride_limit_backward: {weight: 1.00}
+    biped_stance_foot_velocity_backward: {weight: 0.75}
+
+    # Conditional diagnostics only; these do not enter PPO's objective.
+    facet_backward_actual_com_linvel_b_x:
+      {_target_: facet_backward_actual_com_linvel_b_x, weight: 1.0, enabled: false}
+    facet_backward_actual_com_linvel_b_x_error:
+      {_target_: facet_backward_actual_com_linvel_b_x_error, weight: 1.0, enabled: false}
+    facet_backward_heading_error:
+      {_target_: facet_backward_heading_error, weight: 1.0, enabled: false}
+    facet_backward_lateral_speed:
+      {_target_: facet_backward_lateral_speed, weight: 1.0, enabled: false}
+    facet_backward_cross_track_error:
+      {_target_: facet_backward_cross_track_error, weight: 1.0, enabled: false}
