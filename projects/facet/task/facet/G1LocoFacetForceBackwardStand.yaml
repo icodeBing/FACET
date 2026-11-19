@@ -1,0 +1,75 @@
+# @package task
+defaults:
+  - /task/facet/G1LocoFacetForceForward@_here_
+  - _self_
+
+name: G1LocoFacetForceBackwardStand
+
+# Stage 3: learn the falling edge of either force direction. Positive and
+# negative pulls retain both walking gaits; after either release the reference
+# is held at the release CoM and the same standing terms take over.
+command:
+  fixed_velocity: false
+  force_drive_prob: 1.0
+  force_drive_x_range: [8., 8.]
+  force_drive_y_range: [0., 0.]
+  force_drive_z_range: [0., 0.]
+  # Zero samples the sign independently, so forward and backward pulls are
+  # both present during continued training.
+  force_drive_direction: 0.0
+  force_drive_duration_range: [3.0, 5.0]
+  force_drive_once: false
+  force_drive_interval_range: [2.0, 4.0]
+  force_drive_start_delay_range: [0.5, 1.5]
+  stand_on_force_release: true
+  disturbance_prob: 0.0
+
+reward:
+  loco:
+    # These terms were disabled in the continuous-force task because it had
+    # no release transition. They are gated to zero-speed/released periods by
+    # the reward implementations and do not alter backward walking directly.
+    facet_stand_root_motion:
+      _target_: facet_stand_root_motion
+      weight: 0.80
+      linear_sigma: 0.08
+      angular_sigma: 0.20
+    facet_stand_root_position:
+      _target_: facet_stand_root_position
+      weight: 0.50
+      position_sigma: 0.08
+    facet_stand_joint_posture:
+      _target_: facet_stand_joint_posture
+      weight: 1.0
+      joint_names: [.*hip_.*_joint, .*knee_joint, .*ankle_.*_joint]
+      sigma: 0.25
+    facet_stand_foot_contact:
+      _target_: facet_stand_foot_contact
+      weight: 0.75
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+    facet_stand_foot_velocity:
+      _target_: facet_stand_foot_velocity
+      weight: 0.50
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      sigma: 0.10
+    facet_stand_torso_stability:
+      _target_: facet_stand_torso_stability
+      weight: 0.50
+      body_name: torso_link
+      angle_sigma: 0.18
+      rate_sigma: 0.80
+
+    # Re-enable the backward gait terms that Stage 1 intentionally disabled.
+    # Forward terms remain inherited from G1LocoFacetForceForward.
+    facet_backward_com_velocity_tracking: {weight: 4.0}
+    facet_backward_straightness: {weight: 1.0}
+    facet_backward_step_symmetry: {weight: 0.80}
+    biped_alternating_contact_backward: {weight: 2.75}
+    biped_swing_height_backward: {weight: 1.25}
+    biped_swing_knee_flexion_backward: {weight: 0.75}
+    biped_knee_phase_symmetry_backward: {weight: 0.75}
+    biped_swing_hip_flexion_backward: {weight: 0.70}
+    biped_swing_forward_backward: {weight: 1.20}
+    biped_swing_foot_placement_backward: {weight: 1.10}
+    biped_stride_limit_backward: {weight: 1.00}
+    biped_stance_foot_velocity_backward: {weight: 0.75}
