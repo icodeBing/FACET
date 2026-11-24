@@ -31,33 +31,36 @@ reward:
     # the reward implementations and do not alter backward walking directly.
     facet_stand_root_motion:
       _target_: facet_stand_root_motion
-      weight: 0.80
+      # Keep some damping for large body excursions, but do not make every
+      # instantaneous step velocity costly: the release objective is bounded
+      # net motion, not a frozen double-support pose.
+      weight: 0.20
       linear_sigma: 0.08
       angular_sigma: 0.20
     facet_stand_root_position:
       _target_: facet_stand_root_position
-      weight: 0.50
-      position_sigma: 0.08
+      # Stronger release-anchor feedback directly opposes the measured drift.
+      weight: 1.50
+      position_sigma: 0.12
     facet_stand_joint_posture:
-      _target_: facet_stand_joint_posture
-      weight: 1.0
-      joint_names: [.*hip_.*_joint, .*knee_joint, .*ankle_.*_joint]
-      sigma: 0.25
+      # Do not pull the legs back to a static default pose after release.
+      weight: 0.0
     facet_stand_foot_contact:
-      _target_: facet_stand_foot_contact
-      weight: 0.75
-      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      # A dynamic balance response may use alternating support.
+      weight: 0.0
     facet_stand_foot_velocity:
-      _target_: facet_stand_foot_velocity
-      weight: 0.50
-      body_names: [left_ankle_roll_link, right_ankle_roll_link]
-      sigma: 0.10
+      # Penalize net root drift rather than all foot motion.
+      weight: 0.0
     facet_stand_torso_stability:
       _target_: facet_stand_torso_stability
-      weight: 0.50
+      weight: 1.00
       body_name: torso_link
       angle_sigma: 0.18
       rate_sigma: 0.80
+
+    # Reduce the large lateral component measured during forward pulls.
+    root_lateral_velocity_l2: {weight: 1.0}
+    facet_body_pitch_roll_l2: {weight: 16.0, body_name: torso_link}
 
     # Re-enable the backward gait terms that Stage 1 intentionally disabled.
     # Forward terms remain inherited from G1LocoFacetForceForward.

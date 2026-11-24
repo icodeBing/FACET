@@ -72,6 +72,10 @@ class GaitCsvRecorder:
         self.leg_joint_ids = self.asset.find_joints(
             leg_joint_names, preserve_order=True
         )[0]
+        self.arm_joint_ids, self.arm_joint_names = self.asset.find_joints(
+            [".*shoulder.*", ".*elbow_joint", ".*wrist.*"],
+            preserve_order=True,
+        )[:2]
         self.torso_id = self.asset.find_bodies(["torso_link"], preserve_order=True)[0]
         if (
             len(self.foot_ids) != 2
@@ -79,6 +83,7 @@ class GaitCsvRecorder:
             or len(self.knee_ids) != 2
             or len(self.hip_ids) != 2
             or len(self.leg_joint_ids) != len(leg_joint_names)
+            or len(self.arm_joint_ids) == 0
             or len(self.torso_id) != 1
         ):
             raise ValueError("G1 gait telemetry could not resolve both feet and knees")
@@ -197,6 +202,15 @@ class GaitCsvRecorder:
             "root_yaw_rad", "command_heading_w_rad", "heading_error_rad",
             "root_roll_rate_radps", "root_pitch_rate_radps", "root_yaw_rate_radps",
         ]
+        for joint_name in self.arm_joint_names:
+            prefix = f"arm_{joint_name}"
+            self.columns.extend((
+                f"{prefix}_pos_rad",
+                f"{prefix}_offset_from_default_rad",
+                f"{prefix}_target_rad",
+                f"{prefix}_target_error_rad",
+                f"{prefix}_vel_radps",
+            ))
         self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
         self.writer.writeheader()
         print(f"Gait CSV recording to: {path.resolve()}")
@@ -354,7 +368,7 @@ class GaitCsvRecorder:
 
         left_contact = bool(contacts[0].item())
         right_contact = bool(contacts[1].item())
-        return {
+        row = {
             "control_step": control_step,
             "sim_time_s": control_step * float(self.env.step_dt),
             "episode_id": episode_id,
@@ -483,6 +497,24 @@ class GaitCsvRecorder:
             "root_pitch_rate_radps": self._float(root_ang_vel_b[1]),
             "root_yaw_rate_radps": self._float(root_yaw_rate),
         }
+        arm_pos = asset.data.joint_pos[0, self.arm_joint_ids]
+        arm_default = asset.data.default_joint_pos[0, self.arm_joint_ids]
+        arm_target = asset.data.joint_pos_target[0, self.arm_joint_ids]
+        arm_vel = asset.data.joint_vel[0, self.arm_joint_ids]
+        for i, joint_name in enumerate(self.arm_joint_names):
+            prefix = f"arm_{joint_name}"
+            row.update({
+                f"{prefix}_pos_rad": self._float(arm_pos[i]),
+                f"{prefix}_offset_from_default_rad": self._float(
+                    arm_pos[i] - arm_default[i]
+                ),
+                f"{prefix}_target_rad": self._float(arm_target[i]),
+                f"{prefix}_target_error_rad": self._float(
+                    arm_pos[i] - arm_target[i]
+                ),
+                f"{prefix}_vel_radps": self._float(arm_vel[i]),
+            })
+        return row
 
     def write(self, row):
         self.writer.writerow(row)
