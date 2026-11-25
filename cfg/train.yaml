@@ -16,6 +16,10 @@ app:
 
 # total_frames: 300_000_000
 total_frames: 150_000_000
+# Use total_frames=-1 (or null) to train until Ctrl+C/SIGTERM.
+# Infinite runs ramp curricula/schedules over this many global frames, then
+# hold their final settings. This does not limit training duration.
+schedule_frames: 150_000_000
 max_iters: -1
 eval_interval: -1
 eval_render: false

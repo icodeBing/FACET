@@ -5,7 +5,11 @@ import wandb
 import logging
 import time
 import datetime
+import itertools
+import os
+import signal
 from pathlib import Path
+from training_runtime import iteration_limit, training_progress
 
 from omegaconf import OmegaConf, DictConfig
 
@@ -81,9 +85,17 @@ def main(cfg: DictConfig):
     policy: PPOBase
 
     frames_per_batch = env.num_envs * cfg.algo.train_every
-    total_frames = cfg.get("total_frames", -1) // aa.get_world_size()
-    total_frames = total_frames // frames_per_batch * frames_per_batch
-    total_iters = total_frames // frames_per_batch
+    total_iters = iteration_limit(
+        cfg.get("total_frames", -1), aa.get_world_size(), frames_per_batch
+    )
+    schedule_iters = total_iters
+    if total_iters is None:
+        schedule_iters = iteration_limit(
+            cfg.get("schedule_frames", 150_000_000), aa.get_world_size(), frames_per_batch
+        )
+        if schedule_iters is None:
+            raise ValueError("schedule_frames must be a positive finite frame budget")
+        logging.info("Unlimited training: stop with Ctrl+C or SIGTERM; schedule horizon=%s updates", schedule_iters)
     
     checkpoint_interval = cfg.checkpoint_interval
     upload_interval = cfg.upload_interval
@@ -104,14 +116,18 @@ def main(cfg: DictConfig):
         state_dict["wandb"] = {"name": run.name, "id": run.id}
         state_dict["policy"] = policy.state_dict()
         
-        torch.save(state_dict, ckpt_path)
+        # Readers must never see a partially overwritten checkpoint_temp.pt.
+        temporary_path = ckpt_path.with_suffix(".pt.tmp")
+        torch.save(state_dict, temporary_path)
+        os.replace(temporary_path, ckpt_path)
         if upload_to_wandb:
             run.save(str(ckpt_path), policy="now", base_path=str(run_dir))
         
         latest_link = run_dir / "checkpoint_latest.pt"
-        if latest_link.exists() or latest_link.is_symlink():
-            latest_link.unlink()
-        latest_link.symlink_to(ckpt_path.name)
+        temporary_link = run_dir / ".checkpoint_latest.tmp"
+        temporary_link.unlink(missing_ok=True)
+        temporary_link.symlink_to(ckpt_path.name)
+        os.replace(temporary_link, latest_link)
         logging.info(f"Saved checkpoint to {ckpt_path}" + (" (wandb)" if upload_to_wandb else ""))
         return str(ckpt_path)
 
@@ -173,6 +189,20 @@ def main(cfg: DictConfig):
     else:
         stages = ("",)
 
+    if total_iters is None and len(stages) > 1:
+        raise ValueError("Unlimited training requires a single algorithm stage")
+
+    stop_requested = False
+
+    def request_stop(signum, frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    previous_handlers = {
+        sig: signal.signal(sig, request_stop) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    stop_flag = torch.zeros(1, dtype=torch.int32, device=env.device)
+
     for stage in stages:
 
         policy.on_stage_start(stage)
@@ -181,13 +211,21 @@ def main(cfg: DictConfig):
             critic=not transitions,
         )
 
+        iterations = itertools.count() if total_iters is None else range(total_iters)
         if aa.is_main_process():
-            progress = tqdm(range(total_iters), desc=stage)
+            progress = tqdm(iterations, total=total_iters, desc=stage)
         else:
-            progress = range(total_iters)
+            progress = iterations
 
         tracking_score = None
         for i in progress:
+            stop_flag.fill_(int(stop_requested))
+            if aa.get_world_size() > 1:
+                torch.distributed.all_reduce(stop_flag, op=torch.distributed.ReduceOp.MAX)
+            if stop_flag.item():
+                stop_requested = True
+                logging.info("Stop requested; saving the last completed policy update")
+                break
             rollout_start = time.perf_counter()
             with ScopedTimer("rollout") as rollout_timer:
                 try:
@@ -224,11 +262,14 @@ def main(cfg: DictConfig):
             info.update(env.stats_ema)  # step-wise exponential moving average of stats
 
             tracking_score = info.get("reward.loco/facet_track_lin_vel")
-            env.set_progress(i / max(total_iters - 1, 1), tracking_score)
+            schedule_progress = training_progress(i, total_iters, schedule_iters)
+            env.set_progress(schedule_progress, tracking_score)
             info.update(env.extra)
 
             if hasattr(policy, "step_schedule"):
-                policy.step_schedule(i / total_iters)
+                policy.step_schedule(
+                    schedule_progress if total_iters is None else i / total_iters
+                )
 
             info["env_frames"] = env_frames * aa.get_world_size()
             info["performance/rollout_fps"] = (
@@ -261,21 +302,24 @@ def main(cfg: DictConfig):
                 print(f"Latest checkpoint: {ckpt_path}")
                 run.log(info)
 
+        if stop_requested:
+            break
+
     if aa.is_main_process():
         ckpt_path = save(policy, "checkpoint_final")
-        policy_eval = policy.get_rollout_policy("eval")
-        # info, trajs, stats = evaluate(
-            # env, policy_eval, render=cfg.eval_render, seed=cfg.seed
-        # )
-        with ScopedTimer("rollout"):
-            info, trajs, stats = evaluate(
-                env, policy_eval, render=cfg.eval_render, seed=cfg.seed
-            )
-
-        info["env_frames"] = env_frames
-        run.log(info)
+        if not stop_requested:
+            policy_eval = policy.get_rollout_policy("eval")
+            with ScopedTimer("rollout"):
+                info, trajs, stats = evaluate(
+                    env, policy_eval, render=cfg.eval_render, seed=cfg.seed
+                )
+            info["env_frames"] = env_frames
+            run.log(info)
         wandb.finish()
         print(f"Final checkpoint: {ckpt_path}")
+    for sig, handler in previous_handlers.items():
+        signal.signal(sig, handler)
+    env.close()
     exit(0)
 
 
