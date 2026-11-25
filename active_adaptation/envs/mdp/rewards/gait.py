@@ -46,6 +46,7 @@ class feet_lateral_separation(Reward):
         knee_body_names: Optional[list[str]] = None,
         min_knee_separation: float = 0.0,
         order_scale: float = 0.12,
+        include_standing: bool = False,
     ):
         super().__init__(env, weight)
         self.asset: Articulation = self.env.scene.articulations["robot"]
@@ -60,6 +61,7 @@ class feet_lateral_separation(Reward):
         self.min_separation = float(min_separation)
         self.min_knee_separation = float(min_knee_separation)
         self.order_scale = float(order_scale)
+        self.include_standing = bool(include_standing)
         if knee_body_names is not None:
             self.knee_body_ids, self.knee_body_names = self.asset.find_bodies(
                 knee_body_names, preserve_order=True
@@ -134,7 +136,10 @@ class feet_lateral_separation(Reward):
                 knee_order_penalty = knee_error.square()
 
             penalty -= (0.5 * (foot_order_penalty + knee_order_penalty)).unsqueeze(1)
-        active = ~self.command_manager.is_standing_env
+        active = (
+            torch.ones_like(self.command_manager.is_standing_env)
+            if self.include_standing else ~self.command_manager.is_standing_env
+        )
         return penalty, active.reshape(self.num_envs, 1)
 
 

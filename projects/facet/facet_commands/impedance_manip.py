@@ -1132,6 +1132,17 @@ class ImpedanceCommandManager(Command):
             dim=-1, keepdim=True
         ) > 1e-5
 
+    @property
+    def impulse_force_active(self) -> torch.Tensor:
+        """Independent perturbations, excluding the force that drives walking.
+
+        Keep disturbance_force_active's total-force semantics for legacy
+        rewards. Admittance tracking must stay enabled during force_drive.
+        """
+        return self.force_impulse.get_force(None, None).norm(
+            dim=-1, keepdim=True
+        ) > 1e-5
+
     def _update_velocity_command(self, resample_mask: torch.Tensor):
         env_ids = resample_mask.nonzero().squeeze(-1)
         if env_ids.numel() > 0:

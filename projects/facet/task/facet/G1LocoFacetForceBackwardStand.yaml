@@ -19,7 +19,9 @@ command:
   force_drive_direction: 0.0
   force_drive_duration_range: [3.0, 5.0]
   force_drive_once: false
-  force_drive_interval_range: [2.0, 4.0]
+  # Cover prolonged zero-force replay, not only a few recovery steps. Across
+  # the vectorized batch both force signs are still sampled independently.
+  force_drive_interval_range: [4.0, 14.0]
   force_drive_start_delay_range: [0.5, 1.5]
   stand_on_force_release: true
   disturbance_prob: 0.0
@@ -42,6 +44,12 @@ reward:
       # Stronger release-anchor feedback directly opposes the measured drift.
       weight: 1.50
       position_sigma: 0.12
+    facet_stand_mean_velocity:
+      _target_: facet_stand_mean_velocity
+      weight: 2.0
+      averaging_time: 0.8
+      velocity_sigma: 0.04
+      settling_time: 0.4
     facet_stand_joint_posture:
       # Do not pull the legs back to a static default pose after release.
       weight: 0.0
@@ -58,13 +66,41 @@ reward:
       angle_sigma: 0.18
       rate_sigma: 0.80
 
-    # Reduce the large lateral component measured during forward pulls.
-    root_lateral_velocity_l2: {weight: 1.0}
+    # Track the force-generated preview with the same objective for both signs.
+    # The legacy impedance_vel has a much broader 0.5 m/s tolerance; retain it
+    # as FACET's preview objective and add this calibrated walking anchor.
+    facet_force_velocity_tracking:
+      _target_: facet_force_velocity_tracking
+      weight: 4.0
+      velocity_sigma: 0.12
+    root_lateral_velocity_l2:
+      weight: 0.35
+      reference_frame: task
+      allow_force_drive: true
+      velocity_sigma: 0.10
+
+    # Geometry remains relevant while taking zero-net-speed balance steps.
+    # Use a soft width range, not an exact double-support stance or mirrored
+    # joint trajectory. The per-foot corridor prevents translating both feet
+    # to one side while satisfying only their relative separation.
+    feet_lateral_separation:
+      include_standing: true
+      min_separation: 0.12
+      min_knee_separation: 0.10
+    facet_foot_lateral_corridor:
+      _target_: facet_foot_lateral_corridor
+      weight: 1.0
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      inner_bound: -0.02
+      outer_bound: 0.20
+      position_sigma: 0.08
     facet_body_pitch_roll_l2: {weight: 16.0, body_name: torso_link}
 
     # Re-enable the backward gait terms that Stage 1 intentionally disabled.
     # Forward terms remain inherited from G1LocoFacetForceForward.
-    facet_backward_com_velocity_tracking: {weight: 4.0}
+    # Replaced by the common two-axis term above; avoid rewarding backward
+    # speed twice while giving forward speed only one tracking objective.
+    facet_backward_com_velocity_tracking: {weight: 0.0}
     facet_backward_straightness: {weight: 1.0}
     facet_backward_step_symmetry: {weight: 0.80}
     biped_alternating_contact_backward: {weight: 2.75}
