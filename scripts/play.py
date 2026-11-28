@@ -164,6 +164,10 @@ class GaitCsvRecorder:
             "transition_done", "gait_phase", "left_phase", "right_phase",
             "left_expected_stance", "right_expected_stance",
             "left_contact", "right_contact", "left_air_time_s", "right_air_time_s",
+            "left_contact_force_z_n", "right_contact_force_z_n",
+            "left_contact_force_norm_n", "right_contact_force_norm_n",
+            "left_vertical_load_fraction", "right_vertical_load_fraction",
+            "com_support_center_y_m",
             "left_foot_x_yaw_m", "left_foot_y_yaw_m", "left_foot_z_m",
             "right_foot_x_yaw_m", "right_foot_y_yaw_m", "right_foot_z_m",
             "signed_lateral_gap_m", "foot_center_distance_m",
@@ -176,6 +180,10 @@ class GaitCsvRecorder:
             "left_touchdown_interval_s", "right_touchdown_interval_s",
             "left_knee_angle_rad", "right_knee_angle_rad",
             "left_knee_offset_rad", "right_knee_offset_rad",
+            "left_knee_target_rad", "right_knee_target_rad",
+            "left_knee_target_error_rad", "right_knee_target_error_rad",
+            "left_knee_applied_torque_nm", "right_knee_applied_torque_nm",
+            "left_knee_lower_limit_margin_rad", "right_knee_lower_limit_margin_rad",
             "left_hip_pitch_angle_rad", "right_hip_pitch_angle_rad",
             "left_hip_pitch_offset_rad", "right_hip_pitch_offset_rad",
             "left_hip_pitch_vel_radps", "right_hip_pitch_vel_radps",
@@ -219,6 +227,7 @@ class GaitCsvRecorder:
                     f"{prefix}_target_rad",
                     f"{prefix}_target_error_rad",
                     f"{prefix}_vel_radps",
+                    f"{prefix}_applied_torque_nm",
                 ))
         self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
         self.writer.writeheader()
@@ -339,6 +348,15 @@ class GaitCsvRecorder:
 
         default_knees = asset.data.default_joint_pos[0, self.knee_ids]
         knees = asset.data.joint_pos[0, self.knee_ids]
+        knee_targets = asset.data.joint_pos_target[0, self.knee_ids]
+        knee_torques = asset.data.applied_torque[0, self.knee_ids]
+        knee_lower_limits = asset.data.joint_pos_limits[0, self.knee_ids, 0]
+        contact_forces = self.contact_sensor.data.net_forces_w[0, self.contact_ids]
+        vertical_load = contact_forces[:, 2].clamp_min(0.0)
+        load_fraction = vertical_load / vertical_load.sum().clamp_min(1e-6)
+        support_center_y = quat_rotate_inverse(
+            yaw_only, root_com_pos - foot_pos_w.mean(dim=0)
+        )[1]
         hips = asset.data.joint_pos[0, self.hip_ids]
         default_hips = asset.data.default_joint_pos[0, self.hip_ids]
         leg_vel = asset.data.joint_vel[0, self.leg_joint_ids]
@@ -396,6 +414,13 @@ class GaitCsvRecorder:
             "right_air_time_s": self._float(
                 self.contact_sensor.data.current_air_time[0, self.contact_ids[1]]
             ),
+            "left_contact_force_z_n": self._float(contact_forces[0, 2]),
+            "right_contact_force_z_n": self._float(contact_forces[1, 2]),
+            "left_contact_force_norm_n": self._float(contact_forces[0].norm()),
+            "right_contact_force_norm_n": self._float(contact_forces[1].norm()),
+            "left_vertical_load_fraction": self._float(load_fraction[0]),
+            "right_vertical_load_fraction": self._float(load_fraction[1]),
+            "com_support_center_y_m": self._float(support_center_y),
             "left_foot_x_yaw_m": self._float(foot_pos_b[0, 0]),
             "left_foot_y_yaw_m": self._float(foot_pos_b[0, 1]),
             "left_foot_z_m": self._float(foot_pos_b[0, 2]),
@@ -423,6 +448,14 @@ class GaitCsvRecorder:
             "right_knee_angle_rad": self._float(knees[1]),
             "left_knee_offset_rad": self._float(knees[0] - default_knees[0]),
             "right_knee_offset_rad": self._float(knees[1] - default_knees[1]),
+            "left_knee_target_rad": self._float(knee_targets[0]),
+            "right_knee_target_rad": self._float(knee_targets[1]),
+            "left_knee_target_error_rad": self._float(knees[0] - knee_targets[0]),
+            "right_knee_target_error_rad": self._float(knees[1] - knee_targets[1]),
+            "left_knee_applied_torque_nm": self._float(knee_torques[0]),
+            "right_knee_applied_torque_nm": self._float(knee_torques[1]),
+            "left_knee_lower_limit_margin_rad": self._float(knees[0] - knee_lower_limits[0]),
+            "right_knee_lower_limit_margin_rad": self._float(knees[1] - knee_lower_limits[1]),
             "left_hip_pitch_angle_rad": self._float(hips[0]),
             "right_hip_pitch_angle_rad": self._float(hips[1]),
             "left_hip_pitch_offset_rad": self._float(hips[0] - default_hips[0]),
@@ -511,6 +544,7 @@ class GaitCsvRecorder:
             default = asset.data.default_joint_pos[0, ids]
             target = asset.data.joint_pos_target[0, ids]
             vel = asset.data.joint_vel[0, ids]
+            torque = asset.data.applied_torque[0, ids]
             for i, joint_name in enumerate(names):
                 prefix = f"{group}_{joint_name}"
                 row.update({
@@ -519,6 +553,7 @@ class GaitCsvRecorder:
                     f"{prefix}_target_rad": self._float(target[i]),
                     f"{prefix}_target_error_rad": self._float(pos[i] - target[i]),
                     f"{prefix}_vel_radps": self._float(vel[i]),
+                    f"{prefix}_applied_torque_nm": self._float(torque[i]),
                 })
         return row
 

@@ -50,6 +50,34 @@ reward:
       averaging_time: 0.8
       velocity_sigma: 0.04
       settling_time: 0.4
+    # Correct the persistent left-knee-at-stop / right-leg-outside solution.
+    # These are soft measured-state costs; no joint target or action scale is
+    # changed. Walking uses only the contacting-knee safety margin.
+    facet_knee_extension_margin:
+      _target_: facet_knee_extension_margin
+      weight: 1.5
+      joint_names: [left_knee_joint, right_knee_joint]
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      min_flexion: 0.05
+      angle_sigma: 0.12
+    facet_stand_support_center:
+      _target_: facet_stand_support_center
+      weight: 1.5
+      body_names: [left_ankle_roll_link, right_ankle_roll_link]
+      settling_time: 0.8
+      contact_time: 0.08
+      contact_ramp_time: 0.12
+      lateral_tolerance: 0.04
+      position_sigma: 0.06
+    facet_stand_leg_balance:
+      _target_: facet_stand_leg_balance
+      weight: 1.0
+      knee_names: [left_knee_joint, right_knee_joint]
+      hip_names: [left_hip_pitch_joint, right_hip_pitch_joint]
+      averaging_time: 0.8
+      knee_tolerance: 0.08
+      hip_tolerance: 0.10
+      angle_sigma: 0.12
     facet_stand_joint_posture:
       # Do not pull the legs back to a static default pose after release.
       weight: 0.0

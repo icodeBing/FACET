@@ -211,6 +211,191 @@ class facet_foot_lateral_corridor(Reward[ImpedanceCommandManager]):
         return -(error / self.position_sigma).square().mean(-1, keepdim=True)
 
 
+class facet_knee_extension_margin(Reward[ImpedanceCommandManager]):
+    """Keep a contacting knee away from the nearly straight lower stop.
+
+    This is a soft lower bound on the measured angle, not a joint target.
+    Swing knees remain free; either force direction and release use the same
+    support-knee rule. G1 knee flexion has the same positive sign on both sides.
+    """
+
+    def __init__(
+        self, env, weight: float, joint_names, body_names,
+        min_flexion: float = 0.05, angle_sigma: float = 0.12,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.knee_ids = self.asset.find_joints(joint_names, preserve_order=True)[0]
+        self.contact_sensor = self.env.scene.sensors["contact_forces"]
+        self.contact_ids = self.contact_sensor.find_bodies(
+            body_names, preserve_order=True
+        )[0]
+        if len(self.knee_ids) != 2 or len(self.contact_ids) != 2:
+            raise ValueError("knee margin requires ordered left/right knees and feet")
+        self.min_flexion = float(min_flexion)
+        self.angle_sigma = float(angle_sigma)
+        if self.min_flexion < 0.0 or self.angle_sigma <= 0.0:
+            raise ValueError("knee margin needs nonnegative flexion and positive sigma")
+
+    def _compute(self):
+        knee = self.asset.data.joint_pos[:, self.knee_ids]
+        contact = (
+            self.contact_sensor.data.current_contact_time[:, self.contact_ids]
+            > self.env.physics_dt
+        )
+        deficit = (self.min_flexion - knee).clamp_min(0.0)
+        cost = (deficit / self.angle_sigma).square() * contact
+        # One healthy leg must not hide the other knee resting on its stop.
+        reward = -cost.amax(dim=-1, keepdim=True)
+        self.env.extra["support/knee_margin_violation_fraction"] = (
+            ((deficit > 0.0) & contact).float().sum()
+            / contact.sum().clamp_min(1)
+        )
+        return reward, contact.any(dim=-1, keepdim=True)
+
+
+class facet_stand_support_center(Reward[ImpedanceCommandManager]):
+    """Soft lateral CoM centering after settling into double support.
+
+    No fore/aft foot target or equal-load target is imposed. During recovery
+    steps and single support this term is off. Contact duration ramps its
+    strength instead of switching a full posture cost on at touchdown.
+    """
+
+    def __init__(
+        self, env, weight: float, body_names, settling_time: float = 0.8,
+        contact_time: float = 0.08, contact_ramp_time: float = 0.12,
+        lateral_tolerance: float = 0.04, position_sigma: float = 0.06,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        self.foot_ids = self.asset.find_bodies(body_names, preserve_order=True)[0]
+        self.contact_sensor = self.env.scene.sensors["contact_forces"]
+        self.contact_ids = self.contact_sensor.find_bodies(
+            body_names, preserve_order=True
+        )[0]
+        if len(self.foot_ids) != 2 or len(self.contact_ids) != 2:
+            raise ValueError("support centering requires ordered left/right feet")
+        if min(settling_time, contact_time, lateral_tolerance) < 0.0:
+            raise ValueError("support centering times and tolerance must be nonnegative")
+        if contact_ramp_time <= 0.0 or position_sigma <= 0.0:
+            raise ValueError("support centering ramp and sigma must be positive")
+        self.settling_steps = max(1, math.ceil(settling_time / env.step_dt))
+        self.contact_time = float(contact_time)
+        self.contact_ramp_time = float(contact_ramp_time)
+        self.lateral_tolerance = float(lateral_tolerance)
+        self.position_sigma = float(position_sigma)
+        self.stand_steps = torch.zeros(self.num_envs, 1, device=self.device)
+
+    def reset(self, env_ids):
+        self.stand_steps[env_ids] = 0.0
+
+    def update(self):
+        standing = self.command_manager.is_standing_env & (
+            ~self.command_manager.disturbance_force_active
+        )
+        self.stand_steps.add_(1.0).mul_(standing).clamp_max_(self.settling_steps)
+
+    def _compute(self):
+        midpoint = self.asset.data.body_link_pos_w[:, self.foot_ids].mean(dim=1)
+        offset = quat_rotate_inverse(
+            yaw_quat(self.asset.data.root_link_quat_w),
+            self.asset.data.root_com_pos_w - midpoint,
+        )[:, 1:2]
+        contact_age = self.contact_sensor.data.current_contact_time[
+            :, self.contact_ids
+        ].amin(dim=-1, keepdim=True)
+        ramp = ((contact_age - self.contact_time) / self.contact_ramp_time).clamp(0.0, 1.0)
+        active = (
+            self.command_manager.is_standing_env
+            & ~self.command_manager.disturbance_force_active
+            & (self.stand_steps >= self.settling_steps)
+            & (contact_age > self.contact_time)
+        )
+        error = (offset.abs() - self.lateral_tolerance).clamp_min(0.0)
+        reward = -torch.log1p((error / self.position_sigma).square()) * ramp
+        self.env.extra["release/support_center_active_fraction"] = active.float().mean()
+        self.env.extra["release/support_center_error_m"] = (
+            (offset.abs() * active).sum() / active.sum().clamp_min(1)
+        )
+        return reward, active
+
+
+class facet_stand_leg_balance(Reward[ImpedanceCommandManager]):
+    """Penalize sustained sagittal leg asymmetry over a full balance cycle.
+
+    Averaging signed left-minus-right knee/hip-pitch offsets permits alternating
+    steps. Unlike an instantaneous mirror pose or a double-contact-only gate,
+    this also detects a knee pinned at its stop while the other foot shuffles.
+    """
+
+    def __init__(
+        self, env, weight: float, knee_names, hip_names,
+        averaging_time: float = 0.8, knee_tolerance: float = 0.08,
+        hip_tolerance: float = 0.10, angle_sigma: float = 0.12,
+    ):
+        super().__init__(env, weight)
+        self.asset = self.command_manager.asset
+        knees = self.asset.find_joints(knee_names, preserve_order=True)[0]
+        hips = self.asset.find_joints(hip_names, preserve_order=True)[0]
+        if len(knees) != 2 or len(hips) != 2:
+            raise ValueError("leg balance requires ordered left/right knees and hip pitch")
+        if averaging_time <= 0.0 or angle_sigma <= 0.0:
+            raise ValueError("leg balance averaging time and sigma must be positive")
+        if min(knee_tolerance, hip_tolerance) < 0.0:
+            raise ValueError("leg balance tolerances must be nonnegative")
+        self.joint_ids = knees + hips
+        self.default = self.asset.data.default_joint_pos[:, self.joint_ids].clone()
+        self.tolerance = torch.tensor(
+            [knee_tolerance, hip_tolerance], device=self.device
+        )
+        self.angle_sigma = float(angle_sigma)
+        self.window = max(1, math.ceil(averaging_time / env.step_dt))
+        self.history = torch.zeros(self.num_envs, self.window, 2, device=self.device)
+        self.difference_sum = torch.zeros(self.num_envs, 2, device=self.device)
+        self.sample_count = torch.zeros(self.num_envs, 1, device=self.device)
+        self.was_standing = torch.zeros(self.num_envs, 1, device=self.device, dtype=torch.bool)
+        self.cursor = 0
+
+    def reset(self, env_ids):
+        self.history[env_ids] = 0.0
+        self.difference_sum[env_ids] = 0.0
+        self.sample_count[env_ids] = 0.0
+        self.was_standing[env_ids] = False
+
+    def update(self):
+        standing = self.command_manager.is_standing_env & (
+            ~self.command_manager.disturbance_force_active
+        )
+        continuing = standing & self.was_standing
+        self.history.mul_(continuing.unsqueeze(-1))
+        self.difference_sum.mul_(continuing)
+        self.sample_count.mul_(continuing)
+        delta = self.asset.data.joint_pos[:, self.joint_ids] - self.default
+        difference = (delta[:, 0::2] - delta[:, 1::2]) * standing
+        old = self.history[:, self.cursor]
+        self.difference_sum.sub_(old).add_(difference)
+        old.copy_(difference)
+        self.sample_count.add_(standing).clamp_max_(self.window)
+        self.was_standing.copy_(standing)
+        self.cursor = (self.cursor + 1) % self.window
+
+    def _compute(self):
+        difference = self.difference_sum / self.sample_count.clamp_min(1.0)
+        error = (difference.abs() - self.tolerance).clamp_min(0.0)
+        reward = -torch.log1p((error / self.angle_sigma).square().mean(dim=-1, keepdim=True))
+        active = (
+            self.command_manager.is_standing_env
+            & ~self.command_manager.disturbance_force_active
+            & (self.sample_count >= self.window)
+        )
+        self.env.extra["release/leg_balance_active_fraction"] = active.float().mean()
+        self.env.extra["release/mean_knee_difference_rad"] = (
+            (difference[:, :1].abs() * active).sum() / active.sum().clamp_min(1)
+        )
+        return reward, active
+
+
 class root_pitch_rate_l2(Reward[ImpedanceCommandManager]):
     """Damp forward/backward torso angular motion during nominal walking."""
 
